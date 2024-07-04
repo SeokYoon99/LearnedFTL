@@ -760,16 +760,16 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->ch_xfer_lat = 0;
 
     /* calculated values */
-    spp->secs_per_blk = spp->secs_per_pg * spp->pgs_per_blk;
-    spp->secs_per_pl = spp->secs_per_blk * spp->blks_per_pl;
-    spp->secs_per_lun = spp->secs_per_pl * spp->pls_per_lun;
-    spp->secs_per_ch = spp->secs_per_lun * spp->luns_per_ch;
-    spp->tt_secs = spp->secs_per_ch * spp->nchs;
+    spp->secs_per_blk = spp->secs_per_pg * spp->pgs_per_blk;	// 8 * 512
+    spp->secs_per_pl = spp->secs_per_blk * spp->blks_per_pl;	// 8 * 512 * 256
+    spp->secs_per_lun = spp->secs_per_pl * spp->pls_per_lun;	// 8 * 512 * 256
+    spp->secs_per_ch = spp->secs_per_lun * spp->luns_per_ch;	// 8 * 512 * 256 * 8
+    spp->tt_secs = spp->secs_per_ch * spp->nchs;				// 8 * 512 * 256 * 8 * 8
 
-    spp->pgs_per_pl = spp->pgs_per_blk * spp->blks_per_pl;
-    spp->pgs_per_lun = spp->pgs_per_pl * spp->pls_per_lun;
-    spp->pgs_per_ch = spp->pgs_per_lun * spp->luns_per_ch;
-    spp->tt_pgs = spp->pgs_per_ch * spp->nchs;
+    spp->pgs_per_pl = spp->pgs_per_blk * spp->blks_per_pl;		// 512 * 256
+    spp->pgs_per_lun = spp->pgs_per_pl * spp->pls_per_lun;		// 512 * 256 * 1
+    spp->pgs_per_ch = spp->pgs_per_lun * spp->luns_per_ch;		// 512 * 256 * 1 * 8
+    spp->tt_pgs = spp->pgs_per_ch * spp->nchs;					// 512 * 256 * 1 * 8 * 8
 
     spp->blks_per_lun = spp->blks_per_pl * spp->pls_per_lun;
     spp->blks_per_ch = spp->blks_per_lun * spp->luns_per_ch;
@@ -797,15 +797,15 @@ static void ssd_init_params(struct ssdparams *spp)
     // for dftl, means how many addresses one page has
     // 512 = 4KB / 8Byte 
     spp->addr_size = 8;
-    spp->pg_size = spp->secsz * spp->secs_per_pg;
-    spp->ents_per_pg = spp->pg_size / spp->addr_size;
-    spp->tt_trans_pgs = spp->tt_pgs / spp->ents_per_pg;
+    spp->pg_size = spp->secsz * spp->secs_per_pg;			// 512 * 8 = 4KB 
+    spp->ents_per_pg = spp->pg_size / spp->addr_size;		// 512 * 8 / 8 = 512
+    spp->tt_trans_pgs = spp->tt_pgs / spp->ents_per_pg;		// 256 * 64
     // one translation page can accomodate 512 pages(1 blocks), so 64 trans pages combine a line
     spp->trans_per_line = spp->pgs_per_line / spp->ents_per_pg;
     spp->tt_line_wps = spp->tt_trans_pgs/spp->trans_per_line;
     printf("total pages: %d\n", spp->tt_line_wps);
 
-    spp->tt_gtd_size = spp->tt_pgs / spp->ents_per_pg;
+    spp->tt_gtd_size = spp->tt_pgs / spp->ents_per_pg;		// 256 * 64
     spp->tt_cmt_size = 8192;
     spp->enable_request_prefetch = true;    /* cannot set false! */
     spp->enable_select_prefetch = true;
@@ -873,6 +873,7 @@ static void ssd_init_ch(struct ssd_channel *ch, struct ssdparams *spp)
     ch->busy = 0;
 }
 
+// modified
 static void ssd_init_maptbl(struct ssd *ssd)
 {
     struct ssdparams *spp = &ssd->sp;
@@ -967,7 +968,7 @@ static void ssd_init_bitmap(struct ssd *ssd) {
 
 }
 
-// * 将所有的模型都初始化为y=x
+// 모든 model을 y=x로 초기화
 static void ssd_init_all_models(struct ssd *ssd) {
     struct ssdparams* sp = &ssd->sp;
     int avg_valid_cnt = sp->ents_per_pg / MAX_INTERVALS;
@@ -1518,10 +1519,12 @@ static int evict_entry_from_cmt(struct ssd *ssd)
     tpnode = QTAILQ_LAST(&cm->TPnode_list);
     if (tpnode->cmt_entry_cnt == 0)
         ftl_err("tpnode cannot be empty!");
+
     //find coldest clean entry
     QTAILQ_FOREACH_REVERSE(cmt_entry, &tpnode->cmt_entry_list, entry) {
         if (cmt_entry->dirty == CLEAN) break;
     }
+
     //if no clean entry exists, find first dirty entry
     if (cmt_entry == NULL) {
         cmt_entry = QTAILQ_LAST(&tpnode->cmt_entry_list);
@@ -1598,8 +1601,8 @@ static struct nand_lun *process_translation_page_read(struct ssd *ssd, NvmeReque
     struct nand_lun *old_lun;
 
     //get gtd mapping physical page
-    tvpn = lpn / spp->ents_per_pg;
-    tppa = get_gtd_ent_index(ssd, tvpn);
+    tvpn = lpn / spp->ents_per_pg;	
+    tppa = get_gtd_ent_index(ssd, tvpn);	// 해당 gtd index에 해당하는 ppa 
     if (!mapped_ppa(&tppa) || !valid_ppa(ssd, &tppa)) {
         //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
         //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
@@ -1613,7 +1616,7 @@ static struct nand_lun *process_translation_page_read(struct ssd *ssd, NvmeReque
         // translation_read_page(ssd, req, &tppa);
         return NULL;
     } else {
-        if (cm->used_cmt_entry_cnt == cm->tt_entries) {
+        if (cm->used_cmt_entry_cnt == cm->tt_entries) {		// cmt에 entry 가득찬 경우
             terminate_flag = evict_entry_from_cmt(ssd);
         }
         //read latency
@@ -2461,7 +2464,7 @@ static bool model_predict(struct ssd *ssd, uint64_t lpn, struct ppa *ppa) {
 
     ssd->stat.model_use_num++;
     // * 1.2.1. do the model prediction
-    uint64_t pred_lpn = lpn - ssd->lr_nodes[gtd_index].start_lpn;
+    uint64_t pred_lpn = lpn - ssd->lr_nodes[gtd_index].start_lpn;	// 모델 내 offset
     
 
     // * 1.2.2 traverse the brks and find where the lpn belongs to
@@ -2479,11 +2482,11 @@ static bool model_predict(struct ssd *ssd, uint64_t lpn, struct ppa *ppa) {
     // * start predict
     if (piece_wise_no != -1) {
 
-        // * 通过函数得到预测值
+        // 함수로 예측 ppn 얻기
         float pred_ppa_f = predict(pred_lpn, &t->brks[piece_wise_no].w, &t->brks[piece_wise_no].b);
         uint64_t pred_ppa = (uint64_t)pred_ppa_f;
 
-        // * 四舍五入
+        // 예측 ppn을 정수 값으로 조정
         if (pred_ppa_f - pred_ppa >= 0.5) {
             pred_ppa++;
         }
@@ -2540,7 +2543,6 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
     struct nand_lun *lun;
 
     // struct timespec time1, time2;
-    
 
     if (end_lpn >= spp->tt_pgs) {
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
@@ -2553,11 +2555,13 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
         sublat = 0;
         
         // 1.1. first look up in the cmt
-        struct cmt_entry *cmt_entry = cmt_hit(ssd, lpn);
-        if (cmt_entry) {
+        struct cmt_entry *cmt_entry = cmt_hit(ssd, lpn);	// cmt check
+        
+		// cmt hit!!
+		if (cmt_entry) {
             ssd->stat.cmt_hit_cnt++;
             ppa = get_maptbl_ent(ssd, lpn);
-            if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
+            if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {	//ppa가 유효한지 검사
                 //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
                 //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
                 //ppa.g.ch, ppa.g.lun, ppa.g.blk, ppa.g.pl, ppa.g.pg, ppa.g.sec);
@@ -2567,7 +2571,6 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
                 continue;
             }
 
-            
 
             if (cmt_entry->prefetch) {
                 lun = get_lun(ssd, &ppa);
@@ -2578,6 +2581,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
             goto ssd_read_latency;
         } 
 
+		// cmt miss!! -> bitmap hit!! -> model predict
         if (ssd->bitmaps[lpn] == 1) {
             ssd->stat.model_hit_num++;
             int gtd_index = lpn/spp->ents_per_pg;
@@ -2593,7 +2597,8 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
                 }
             }
         }
-        
+
+		// cmt miss!! -> bitmap miss!!        
         ssd->stat.cmt_miss_cnt++;
             // pretreat future request
         last_lpn = (lpn / spp->ents_per_pg + 1) * spp->ents_per_pg - 1;
@@ -2673,9 +2678,9 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         // }
         
         cmt_entry = cmt_hit(ssd, lpn);
-        if (cmt_entry) {
+        if (cmt_entry) {		// cmt hit!!
             // ssd->stat.cmt_hit_cnt++;
-        } else {
+        } else {				// cmt miss!!
             last_lpn = (lpn / spp->ents_per_pg + 1) * spp->ents_per_pg - 1;
             last_lpn = (last_lpn < end_lpn) ? last_lpn : end_lpn;
             process_translation_page_write(ssd, req, lpn, last_lpn);

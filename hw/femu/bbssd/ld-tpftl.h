@@ -82,9 +82,9 @@ enum {
 
 // #define CMT_NUM 16*1024
 // #define CMT_NUM 4*1024
-#define MAX_INTERVALS 8         // ! 模型参数：一个模型中包含几个段
-#define INTERVAL_NUM 60         // ! 模型参数：忘了，没啥用应该，后面没用到
-#define TRAIN_THRESHOLD 30      // ! 模型参数：对于整个模型，当有多少有效数据时进行模型训练
+#define MAX_INTERVALS 8         // 모델 매개변수:하나의 모델에 몇개의 segment가 포함되는지
+#define INTERVAL_NUM 60         // 미사용 모델 매개변수
+#define TRAIN_THRESHOLD 30      // 모델 매개변수:전체 모델에 유효 데이터가 얼마나 있을 때 모델 train을 수행하는지
 
 typedef struct lr_breakpoint {
     float w;
@@ -93,12 +93,13 @@ typedef struct lr_breakpoint {
     int valid_cnt;
 }lr_breakpoint;
 
+// linear regression model
 typedef struct lr_node {
 
     lr_breakpoint brks[MAX_INTERVALS];
     uint64_t start_lpn;
     uint64_t start_ppa;
-    uint8_t u;
+    uint8_t u;			// * the bit denote if the model is used
     uint8_t less;
     float success_ratio;
 }lr_node;
@@ -114,6 +115,7 @@ typedef struct cmt_entry {
     struct cmt_entry *next;    /* for hash */
 } cmt_entry;
 
+// Translation Page
 typedef struct TPnode {
     uint64_t tvpn;
     int cmt_entry_cnt;
