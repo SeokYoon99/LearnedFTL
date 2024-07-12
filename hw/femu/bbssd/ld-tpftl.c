@@ -260,9 +260,11 @@ static void ssd_init_lines(struct ssd *ssd)
     lm->lines = g_malloc0(sizeof(struct line) * lm->tt_lines);
 
     QTAILQ_INIT(&lm->free_line_list);
+
     lm->victim_line_pq = pqueue_init(spp->tt_lines, victim_line_cmp_pri,
             victim_line_get_pri, victim_line_set_pri,
             victim_line_get_pos, victim_line_set_pos);
+
     QTAILQ_INIT(&lm->full_line_list);
     
     // * modified
@@ -332,6 +334,7 @@ static void init_line_write_pointer(struct ssd *ssd, struct write_pointer *wpp, 
     wpp->blk = curline->id;
     wpp->pl = 0;
     ssd->line2write_pointer[wpp->curline->id] = wpp;
+
     if (&ssd->trans_wp == wpp) {
         wpp->curline->type = GTD;
     } else {
@@ -352,8 +355,7 @@ static void init_line_write_pointer(struct ssd *ssd, struct write_pointer *wpp, 
 static void ssd_init_write_pointer(struct ssd *ssd)
 {
     
-    
-    ssd->gtd_wps = g_malloc0(sizeof(struct write_pointer) * ssd->sp.tt_line_wps);
+    ssd->gtd_wps = g_malloc0(sizeof(struct write_pointer) * ssd->sp.tt_line_wps); //256
     
     for (int i = 0; i < 240; i++) {
         ssd->gtd_wps[i].curline = NULL;
@@ -363,6 +365,7 @@ static void ssd_init_write_pointer(struct ssd *ssd)
         ssd->gtd_wps[i].vic_cnt = 0;
         ssd->gtd_wps[i].id = i;
     }
+
     ssd->trans_wp.wpl = g_malloc0(sizeof(struct wp_lines));
     ssd->trans_wp.wpl->line = NULL;
     ssd->trans_wp.wpl->next = NULL;
@@ -371,8 +374,6 @@ static void ssd_init_write_pointer(struct ssd *ssd)
     // init the rmap for lines
     ssd->line2write_pointer = g_malloc0(sizeof(struct write_pointer *) * ssd->sp.tt_lines);
     init_line_write_pointer(ssd, &ssd->trans_wp, false);
-
-
 }
 
 static inline void check_addr(int a, int max)
@@ -440,6 +441,9 @@ static void insert_wp_lines(struct write_pointer *wpp) {
 // }
 
 static bool should_do_gc_v3(struct ssd *ssd, struct write_pointer *wpp) {
+
+	ssd->stat.gc_cnt++;
+
     struct line_mgmt *lm = &ssd->lm;
     printf("GC happens?\n");
     if (ssd->lm.free_line_cnt < 4) {
@@ -661,8 +665,6 @@ static void advance_line_write_pointer (struct ssd *ssd, struct write_pointer *w
                 // ssd->stat.GC_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
                 
                 
-                
-                
                 if (!res)
                     init_line_write_pointer(ssd, wpp, false);
                 else if (wpp != &ssd->trans_wp) {
@@ -749,7 +751,7 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->secsz = 512;
     spp->secs_per_pg = 8;
     spp->pgs_per_blk = 512;
-    spp->blks_per_pl = 256; /* 32GB */
+    spp->blks_per_pl = 128; /* 32GB */
     spp->pls_per_lun = 1;
     spp->luns_per_ch = 8;   /* default 8 */
     spp->nchs = 8;          /* default 8 */
@@ -778,11 +780,11 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->pls_per_ch =  spp->pls_per_lun * spp->luns_per_ch;
     spp->tt_pls = spp->pls_per_ch * spp->nchs;
 
-    spp->tt_luns = spp->luns_per_ch * spp->nchs;
+    spp->tt_luns = spp->luns_per_ch * spp->nchs;	// 8 * 8
 
     /* line is special, put it at the end */
     spp->blks_per_line = spp->tt_luns; /* TODO: to fix under multiplanes */
-    spp->pgs_per_line = spp->blks_per_line * spp->pgs_per_blk;
+    spp->pgs_per_line = spp->blks_per_line * spp->pgs_per_blk;	// 64 * 512 
     spp->secs_per_line = spp->pgs_per_line * spp->secs_per_pg;
     spp->tt_lines = spp->blks_per_lun; /* TODO: to fix under multiplanes */
 
@@ -800,13 +802,14 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->pg_size = spp->secsz * spp->secs_per_pg;			// 512 * 8 = 4KB 
     spp->ents_per_pg = spp->pg_size / spp->addr_size;		// 512 * 8 / 8 = 512
     spp->tt_trans_pgs = spp->tt_pgs / spp->ents_per_pg;		// 256 * 64
-    // one translation page can accomodate 512 pages(1 blocks), so 64 trans pages combine a line
-    spp->trans_per_line = spp->pgs_per_line / spp->ents_per_pg;
-    spp->tt_line_wps = spp->tt_trans_pgs/spp->trans_per_line;
+    
+	// one translation page can accomodate 512 pages(1 blocks), so 64 trans pages combine a line
+    spp->trans_per_line = spp->pgs_per_line / spp->ents_per_pg;	// 64 * 512 / 512 
+    spp->tt_line_wps = spp->tt_trans_pgs/spp->trans_per_line;	// 256 
     printf("total pages: %d\n", spp->tt_line_wps);
 
     spp->tt_gtd_size = spp->tt_pgs / spp->ents_per_pg;		// 256 * 64
-    spp->tt_cmt_size = 8192;
+    spp->tt_cmt_size = 4096;
     spp->enable_request_prefetch = true;    /* cannot set false! */
     spp->enable_select_prefetch = true;
 
@@ -883,22 +886,17 @@ static void ssd_init_maptbl(struct ssd *ssd)
         ssd->maptbl[i].ppa = UNMAPPED_PPA;
     }
 
-    // init the gtd
+    // init the gtd, tt_trans_pgs = 256 * 64
     ssd->lr_nodes = g_malloc0(sizeof(struct lr_node) * spp->tt_trans_pgs);
     ssd->gtd = g_malloc0(sizeof(struct ppa) * spp->tt_trans_pgs);
-    ssd->lr_nodes = g_malloc0(sizeof(struct lr_node) * spp->tt_trans_pgs);
     ssd->gtd_usage = g_malloc0(sizeof(uint64_t) * spp->tt_trans_pgs);
 
     ssd->valid_lines = g_malloc0(sizeof(uint8_t) * spp->tt_lines);
     for (int i = 0; i < spp->blks_per_pl; i++) 
         ssd->valid_lines[i] = 0;
 
-    // init the cmt
-
     for (int i = 0; i < spp->tt_trans_pgs; i++) {
         ssd->gtd[i].ppa = UNMAPPED_PPA;
-        // ssd->lr_nodes[i].b = 0;
-        // ssd->lr_nodes[i].w = 0;
         ssd->lr_nodes[i].less = 0;
         ssd->lr_nodes[i].u = 1;     // * the bit denote if the model is used
 
@@ -915,7 +913,7 @@ static void ssd_init_cmt(struct ssd *ssd)
     struct cmt_entry *cmt_entry;
     struct hash_table *ht = &cm->ht;
 
-    cm->tt_entries = spp->tt_cmt_size;
+    cm->tt_entries = spp->tt_cmt_size;	// 8192
     cm->tt_TPnodes = 0;
     cm->free_cmt_entry_cnt = 0;
     cm->used_cmt_entry_cnt = 0;
@@ -971,7 +969,7 @@ static void ssd_init_bitmap(struct ssd *ssd) {
 // 모든 model을 y=x로 초기화
 static void ssd_init_all_models(struct ssd *ssd) {
     struct ssdparams* sp = &ssd->sp;
-    int avg_valid_cnt = sp->ents_per_pg / MAX_INTERVALS;
+    int avg_valid_cnt = sp->ents_per_pg / MAX_INTERVALS;	// 64
 
     for (int i = 0; i < sp->tt_gtd_size; i++) {
 
@@ -983,7 +981,7 @@ static void ssd_init_all_models(struct ssd *ssd) {
 
             // * all models' valid cnt is zero, to facilitate the model sequential initilization
             brk->valid_cnt = 0;
-            brk->key = j * avg_valid_cnt;
+            brk->key = j * avg_valid_cnt;	// 0 64 128 192 256 320 384 448
         }
     }
 }
@@ -992,13 +990,17 @@ static void ssd_init_statistics(struct ssd *ssd)
 {
     struct statistics *st = &ssd->stat;
 
+	st->waf_host_write = 0;
+	st->waf_ssd_write = 0;
+	st->gc_cnt = 0;
     st->cmt_hit_cnt = 0;
-    st->cmt_miss_cnt = 0;
+    st->cmt_miss_cnt = 0;	// cmt miss -> gtd access & bitmap check
     st->cmt_hit_ratio = 0;
-    st->access_cnt = 0;
-    st->model_hit_num = 0;
+    st->access_cnt = 0;		// 들어오는 read request #
+    st->model_hit_num = 0;	// cmt miss -> bitmap hit
     st->model_use_num = 0;
     st->model_out_range = 0;
+	st->double_read = 0;
     st->predict_time = 0;
     st->calculate_time = 0;
     st->sort_time = 0;
@@ -1620,7 +1622,7 @@ static struct nand_lun *process_translation_page_read(struct ssd *ssd, NvmeReque
             terminate_flag = evict_entry_from_cmt(ssd);
         }
         //read latency
-        translation_read_page(ssd, req, &tppa);
+        translation_read_page(ssd, req, &tppa);		// first read
         old_lun = get_lun(ssd, &tppa);
         next_avail_time = old_lun->next_lun_avail_time;
         ppn = ppa2pgidx(ssd, &ppa);
@@ -1726,21 +1728,23 @@ static struct nand_lun *process_translation_page_write(struct ssd *ssd, NvmeRequ
 
     //get gtd mapping physical page
     tvpn = lpn / spp->ents_per_pg;
-    ppa = get_gtd_ent_index(ssd, tvpn);
+    ppa = get_gtd_ent_index(ssd, tvpn);		// 해당 gtd index에 해당하는 ppa
 
-    if (cm->used_cmt_entry_cnt == cm->tt_entries) {
+    if (cm->used_cmt_entry_cnt == cm->tt_entries) {		// cmt에 entry 가득 찬 경우
         terminate_flag = evict_entry_from_cmt(ssd);
     }
+
     /* if it is a new write, not an update */
     if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
         insert_entry_to_cmt(ssd, lpn, UNMAPPED_PPA, HEAD, false, 0);
         old_lun = NULL;
     } else {
         //read latency
-        translation_read_page(ssd, req, &ppa);
+        translation_read_page(ssd, req, &ppa);		// first read
         old_lun = get_lun(ssd, &ppa);
         next_avail_time = old_lun->next_lun_avail_time;
-        //get real lpn-ppn
+        
+		//get real lpn-ppn
         ppa = get_maptbl_ent(ssd, lpn);
 
         if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
@@ -1749,6 +1753,7 @@ static struct nand_lun *process_translation_page_write(struct ssd *ssd, NvmeRequ
             ppn = ppa2pgidx(ssd, &ppa);
             insert_entry_to_cmt(ssd, lpn, ppn, HEAD, false, 0);
         }
+
         /* when tpnode has not been evicted, execute request-level prefetching, 
         end_lpn is the end of translation page or end of request, when evict
         a TPnode or at the end of translation page/request, stop */
@@ -1921,6 +1926,7 @@ static uint64_t gc_write_page_through_line_wp(struct ssd *ssd, uint64_t lpn, str
         gcw.stime = 0;
         ssd_advance_status(ssd, new_ppa, &gcw);
     }
+	ssd->stat.waf_ssd_write++;
 
     /* advance per-ch gc_endtime as well */
 #if 0
@@ -2522,9 +2528,16 @@ static bool model_predict(struct ssd *ssd, uint64_t lpn, struct ppa *ppa) {
 
 
 void count_segments(struct ssd* ssd) {
-    printf("total cnt: %lld\n", (long long)ssd->stat.access_cnt);
-    printf("cmt cnt: %lld\n", (long long)ssd->stat.cmt_hit_cnt);
-    printf("model cnt: %lld\n", (long long)ssd->stat.model_hit_num);
+    printf("total access cnt: %lld\n", (long long)ssd->stat.access_cnt);
+    printf("cmt hit cnt: %lld\n", (long long)ssd->stat.cmt_hit_cnt);
+	printf("cmt miss cnt: %lld\n", (long long)ssd->stat.cmt_miss_cnt);
+    printf("model use cnt: %lld\n", (long long)ssd->stat.model_use_num);
+	printf("double read cnt: %lld\n", (long long)ssd->stat.double_read);
+	printf("model training cnt: %lld\n", (long long)ssd->stat.model_training_nums);
+	printf("GC cnt: %d\n", ssd->stat.gc_cnt);
+	printf("waf_ssd_write: %ld\n", ssd->stat.waf_ssd_write);
+	printf("waf_host_write: %ld\n", ssd->stat.waf_host_write);
+
     ssd->stat.access_cnt = 0;
     ssd->stat.cmt_hit_cnt = 0;
     ssd->stat.model_hit_num = 0;
@@ -2543,6 +2556,11 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
     struct nand_lun *lun;
 
     // struct timespec time1, time2;
+
+	if(req->cmd.cdw10 == 100){
+		count_segments(ssd);
+	}
+
 
     if (end_lpn >= spp->tt_pgs) {
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
@@ -2579,7 +2597,9 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
             }
 
             goto ssd_read_latency;
-        } 
+        }
+
+		ssd->stat.cmt_miss_cnt++;
 
 		// cmt miss!! -> bitmap hit!! -> model predict
         if (ssd->bitmaps[lpn] == 1) {
@@ -2598,13 +2618,17 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
             }
         }
 
-		// cmt miss!! -> bitmap miss!!        
-        ssd->stat.cmt_miss_cnt++;
+		// cmt miss!! -> bitmap miss!! -> TransPage
+		ssd->stat.double_read++;
+        //ssd->stat.cmt_miss_cnt++;
+
             // pretreat future request
         last_lpn = (lpn / spp->ents_per_pg + 1) * spp->ents_per_pg - 1;
         last_lpn = (last_lpn < end_lpn) ? last_lpn : end_lpn;
-        process_translation_page_read(ssd, req, lpn, last_lpn);
+        
+		process_translation_page_read(ssd, req, lpn, last_lpn);
         cmt_entry = cmt_hit_no_move(ssd, lpn);
+
         ppa = get_maptbl_ent(ssd, lpn);
         if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
             //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
@@ -2692,24 +2716,29 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         cmt_entry = find_hash_entry(&ssd->cm.ht, lpn);
 
 
-
         if (mapped_ppa(&ppa)) {
+			/* update old page information first */
             mark_page_invalid(ssd, &ppa);
             set_rmap_ent(ssd, INVALID_LPN, &ppa);
         }
 
         struct write_pointer *lwp= &ssd->gtd_wps[wp_index];
-        if (!lwp->curline) {
+
+        if (!lwp->curline) {	// 가져온 write_pointer가 line과 연결되지 않은 경우
             init_line_write_pointer(ssd, lwp, true);
         } else {
             advance_line_write_pointer(ssd, lwp);
         }
 
+		/* new write */
         ppa = get_new_line_page(ssd, lwp);
-        set_maptbl_ent(ssd, lpn, &ppa);
-        cmt_entry->ppn = ppa2pgidx(ssd, &ppa);
+        /* update maptbl */
+		set_maptbl_ent(ssd, lpn, &ppa);
+        
+		cmt_entry->ppn = ppa2pgidx(ssd, &ppa);
         cmt_entry->dirty = DIRTY;
-        set_rmap_ent(ssd, lpn, &ppa);
+        /* update rmap */
+		set_rmap_ent(ssd, lpn, &ppa);
 
         mark_page_valid(ssd, &ppa);
 
@@ -2721,6 +2750,9 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         curlat = ssd_advance_status(ssd, &ppa, &swr);
         maxlat = (curlat > maxlat) ? curlat : maxlat;
         // clock_gettime(CLOCK_MONOTONIC, &time2);
+
+		ssd->stat.waf_host_write++;
+		ssd->stat.waf_ssd_write++;
     }
 
     // * simulate the model sequential initalization

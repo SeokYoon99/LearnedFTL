@@ -1,19 +1,16 @@
+#ifndef __FEMU_TPFTL_H
+#define __FEMU_TPFTL_H
 
-#ifndef _L_FEMU_FTL_H
-#define _L_FEMU_FTL_H
 #include "../nvme.h"
-
 
 #define INVALID_PPA     (~(0ULL))
 #define INVALID_LPN     (~(0ULL))
 #define UNMAPPED_PPA    (~(0ULL))
 
-
 #define CMT_HASH_SIZE (24593ULL)
 #define TP_HASH_SIZE (24593ULL)
-#define ENT_PER_TP (2048ULL)
-#define GC_THRESH 5
 
+#define ENT_PER_TP (512ULL)
 
 enum {
     NAND_READ =  0,
@@ -21,29 +18,13 @@ enum {
     NAND_ERASE = 2,
 
     NAND_READ_LATENCY = 40000,
-    NAND_PROG_LATENCY =  200000,
+    NAND_PROG_LATENCY = 200000,
     NAND_ERASE_LATENCY = 2000000,
-};
-
-enum {
-    CLEAN = 0,
-    DIRTY = 1
-};
-
-enum {
-    HEAD = 0,
-    TAIL = 1
 };
 
 enum {
     USER_IO = 0,
     GC_IO = 1,
-};
-
-enum {
-    GTD = 0,
-    DATA = 1,
-    UNUSED = 2,
 };
 
 enum {
@@ -57,6 +38,22 @@ enum {
 };
 
 enum {
+    CLEAN = 0,
+    DIRTY = 1
+};
+
+enum {
+    HEAD = 0,
+    TAIL = 1
+};
+
+enum {
+    NONE = 0,
+    DATA = 1,
+    TRANS = 2
+};
+
+enum {
     FEMU_ENABLE_GC_DELAY = 1,
     FEMU_DISABLE_GC_DELAY = 2,
 
@@ -66,10 +63,9 @@ enum {
     FEMU_RESET_ACCT = 5,
     FEMU_ENABLE_LOG = 6,
     FEMU_DISABLE_LOG = 7,
+
     FEMU_RESET_STAT = 8,
     FEMU_PRINT_STAT = 9,
-    FEMU_MODEL = 10,
-    FEMU_MODEL_UNUSE = 11
 };
 
 
@@ -79,73 +75,6 @@ enum {
 #define PL_BITS     (8)
 #define LUN_BITS    (8)
 #define CH_BITS     (7)
-
-// #define CMT_NUM 16*1024
-// #define CMT_NUM 4*1024
-#define MAX_INTERVALS 8         // 모델 매개변수:하나의 모델에 몇개의 segment가 포함되는지
-#define INTERVAL_NUM 60         // 미사용 모델 매개변수
-#define TRAIN_THRESHOLD 30      // 모델 매개변수:전체 모델에 유효 데이터가 얼마나 있을 때 모델 train을 수행하는지
-
-typedef struct lr_breakpoint {
-    float w;	// 기울기
-    float b;	// 절편
-    int key;
-    int valid_cnt;
-}lr_breakpoint;
-
-// linear regression model
-typedef struct lr_node {
-
-    lr_breakpoint brks[MAX_INTERVALS];
-    uint64_t start_lpn;
-    uint64_t start_ppa;
-    uint8_t u;			// * the bit denote if the model is used
-    uint8_t less;
-    float success_ratio;
-}lr_node;
-
-typedef struct cmt_entry {
-    uint64_t lpn;
-    uint64_t ppn;
-    int dirty;
-    // int hotness;
-    QTAILQ_ENTRY(cmt_entry) entry;
-    bool prefetch;
-    uint64_t next_avail_time;
-    struct cmt_entry *next;    /* for hash */
-} cmt_entry;
-
-// Translation Page
-typedef struct TPnode {
-    uint64_t tvpn;
-    int cmt_entry_cnt;
-    // double hotness;  /* The paper didn't explain how to operate and set hotness */
-    QTAILQ_ENTRY(TPnode) entry;
-    //QTAIQ_HEAD 为热度最低的
-    QTAILQ_HEAD(cmt_entry_list, cmt_entry) cmt_entry_list;
-    struct TPnode *next;   /* for hash */
-    short exist_ent[ENT_PER_TP];
-} TPnode;
-
-
-typedef struct hash_table {
-    cmt_entry *cmt_table[CMT_HASH_SIZE];
-    TPnode *tp_table[TP_HASH_SIZE];
-}hash_table;
-
-struct cmt_mgmt {
-    cmt_entry *cmt_entries;
-    QTAILQ_HEAD(free_cmt_entry_list, cmt_entry) free_cmt_entry_list;
-    //QTAIQ_HEAD 为热度最高的
-    QTAILQ_HEAD(TPnode_list, TPnode) TPnode_list;
-    int tt_TPnodes;
-    int tt_entries;
-    int free_cmt_entry_cnt;
-    int used_cmt_entry_cnt;
-    // use for selective prefetching;
-    int counter;
-    struct hash_table ht;
-};
 
 /* describe a physical page addr */
 struct ppa {
@@ -250,69 +179,42 @@ struct ssdparams {
 
     int tt_luns;      /* total # of LUNs in the SSD */
 
-
-    //==================modified====================
-    int pg_size;
-    int addr_size;
-    int addr_per_pg;
-    int tt_trans_pgs; 
-    int tt_line_wps;
-    int trans_per_line;
-
     int ents_per_pg;
     int tt_cmt_size;
     int tt_gtd_size;
-
-
-    // * the virtual ppn params
-    int chn_per_lun;
-    int chn_per_pl;
-    int chn_per_pg;
-    int chn_per_blk;
-
     bool enable_request_prefetch;
     bool enable_select_prefetch;
-
 };
 
 typedef struct line {
     int id;  /* line id, the same as corresponding block id */
     int ipc; /* invalid page count in this line */
     int vpc; /* valid page count in this line */
-    int type;
-
-    // * identify how many entries remain in this line
-    int rest;
-    
     QTAILQ_ENTRY(line) entry; /* in either {free,victim,full} list */
     /* position in the priority queue for victim lines */
     size_t                  pos;
-} line;
 
-// *  modify ====================
-struct wp_lines{
-    struct line *line;
-    struct wp_lines *next;
-};
+    int type;
+} line;
 
 /* wp: record next write addr */
 struct write_pointer {
     struct line *curline;
-    struct wp_lines *wpl;	//
-    int vic_cnt;			//
     int ch;
     int lun;
     int pg;
     int blk;
     int pl;
-    int id;					//
-
-    // TODO: how many lines this wpp invade
-    int invade_lines;		// 사용X
 };
 
-struct line_statistic {
-    int rest;
+/* wp: record next translation page write addr */
+struct trans_write_pointer {
+    struct line *curline;
+    int ch;
+    int lun;
+    int pg;
+    int blk;
+    int pl;
 };
 
 struct line_mgmt {
@@ -322,7 +224,6 @@ struct line_mgmt {
     pqueue_t *victim_line_pq;
     //QTAILQ_HEAD(victim_line_list, line) victim_line_list;
     QTAILQ_HEAD(full_line_list, line) full_line_list;
-    QTAILQ_HEAD(victim_list, line) victim_list;
     int tt_lines;
     int free_line_cnt;
     int victim_line_cnt;
@@ -335,56 +236,56 @@ struct nand_cmd {
     int64_t stime; /* Coperd: request arrival time */
 };
 
+/**
+ * @brief cmt entry struct and cmt TPnode struct and cmt management struct
+ * 
+ */
+typedef struct cmt_entry {
+    uint64_t lpn;
+    uint64_t ppn;
+    int dirty;
+    // int hotness;
+    QTAILQ_ENTRY(cmt_entry) entry;
+    bool prefetch;
+    uint64_t next_avail_time;
+    struct cmt_entry *next;    /* for hash */
+} cmt_entry;
 
-// a simple hash table for DFTL
-struct ht {
-    int max_depth;
-    int left_num;
-    int global_version;
-    struct ppa *entry;
-    uint64_t *lpns;
-    uint32_t *version;
-    uint8_t *dirty;
+typedef struct TPnode {
+    uint64_t tvpn;
+    int cmt_entry_cnt;
+    // double hotness;  /* The paper didn't explain how to operate and set hotness */
+    QTAILQ_ENTRY(TPnode) entry;
+    //QTAIQ_HEAD 为热度最低的
+    QTAILQ_HEAD(cmt_entry_list, cmt_entry) cmt_entry_list;
+    struct TPnode *next;   /* for hash */
+    short exist_ent[ENT_PER_TP];
+} TPnode;
 
+typedef struct hash_table {
+    cmt_entry *cmt_table[CMT_HASH_SIZE];
+    TPnode *tp_table[TP_HASH_SIZE];
+}hash_table;
+
+struct cmt_mgmt {
+    cmt_entry *cmt_entries;
+    QTAILQ_HEAD(free_cmt_entry_list, cmt_entry) free_cmt_entry_list;
+    //QTAIQ_HEAD 为热度最高的
+    QTAILQ_HEAD(TPnode_list, TPnode) TPnode_list;
+    int tt_TPnodes;
+    int tt_entries;
+    int free_cmt_entry_cnt;
+    int used_cmt_entry_cnt;
+    // use for selective prefetching;
+    int counter;
+    struct hash_table ht;
 };
 
 struct statistics {
-	long waf_host_write;
-	long waf_ssd_write;
-	int gc_cnt;
     uint64_t cmt_hit_cnt;
     uint64_t cmt_miss_cnt;
     double cmt_hit_ratio;
     uint64_t access_cnt;
-    uint64_t model_hit_num;
-    uint64_t model_use_num;
-    uint64_t model_out_range;
-	uint64_t double_read;
-    uint64_t max_lpn;
-    uint64_t min_lpn;
-    uint64_t req_num;
-    long double average_lat;
-    uint64_t gc_times;
-    uint64_t write_num;
-    uint64_t line_gc_times[512];
-    uint64_t wp_victims[512];
-    uint64_t trans_wp_gc_times;
-    uint64_t line_wp_gc_times;
-    long long calculate_time;
-    long long sort_time;
-    long long predict_time;
-    long long GC_time;
-    long long write_time;
-    long long read_time;
-    long long model_training_nums;
-    // uint64_t max_read_lpn;
-    // uint64_t min_read_lpn;
-    // uint64_t max_write_lpn;
-    // uint64_t min_write_lpn;
-    long double read_joule;
-    long double write_joule;
-    long double erase_joule;
-    long double joule;
 };
 
 struct ssd {
@@ -393,45 +294,24 @@ struct ssd {
     struct ssd_channel *ch;
     struct ppa *maptbl; /* page level mapping table */
     uint64_t *rmap;     /* reverse mapptbl, assume it's stored in OOB */
-    uint8_t *bitmaps;
-
+    struct write_pointer wp;
     struct line_mgmt lm;
-
-    //===============modified=======================
-    struct ppa *gtd;    // global translation blocks
-    struct write_pointer *gtd_wps;  // for every 32 translation pags, there is a write pointer
-    uint64_t *gtd_usage;
-
-    // * the cmt management
+    
     struct cmt_mgmt cm;
-
-    struct write_pointer trans_wp; // the write pointer for writing translation pages
-    struct lr_node *lr_nodes;  // the linear regression model
-    struct ht cmt;    // current mapping table
-    uint64_t num_trans_write;
-    uint64_t num_data_write;
-    uint64_t num_data_read;
+    struct ppa *gtd;
+    struct trans_write_pointer twp;
 
     /* lockless ring for communication with NVMe IO thread */
     struct rte_ring **to_ftl;
     struct rte_ring **to_poller;
     bool *dataplane_started_ptr;
-    
-    bool model_used;
-    uint8_t *valid_lines;
-
-    struct statistics stat;
     QemuThread ftl_thread;
 
-    // * the line-write_pointer mapping
-    struct write_pointer **line2write_pointer;
-
+    struct statistics stat;
+    FILE *fpr, *fpw;
 };
 
 void ssd_init(FemuCtrl *n);
-void count_segments(struct ssd* ssd);
-
-
 
 #ifdef FEMU_DEBUG_FTL
 #define ftl_debug(fmt, ...) \
@@ -454,4 +334,5 @@ void count_segments(struct ssd* ssd);
 #else
 #define ftl_assert(expression)
 #endif
+
 #endif
