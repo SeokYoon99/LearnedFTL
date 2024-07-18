@@ -372,6 +372,7 @@ struct statistics {
     uint64_t line_wp_gc_times;
     long long calculate_time;
     long long sort_time;
+	long long train_time;
     long long predict_time;
     long long GC_time;
     long long write_time;

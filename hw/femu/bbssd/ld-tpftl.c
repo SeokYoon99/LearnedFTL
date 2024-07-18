@@ -300,13 +300,13 @@ static void init_line_write_pointer(struct ssd *ssd, struct write_pointer *wpp, 
     
     if (gc_flag) {
         if (lm->free_line_cnt < free_line_threshold) {
-            // struct timespec time1, time2;
+            //struct timespec time1, time2;
 
-            // clock_gettime(CLOCK_MONOTONIC, &time1);
+            //clock_gettime(CLOCK_MONOTONIC, &time1);
             bool res = should_do_gc_v3(ssd, wpp);
-            // clock_gettime(CLOCK_MONOTONIC, &time2);
+            //clock_gettime(CLOCK_MONOTONIC, &time2);
                 
-            // ssd->stat.GC_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
+            //ssd->stat.GC_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
             if (res) {
                 return;
             }
@@ -656,13 +656,13 @@ static void advance_line_write_pointer (struct ssd *ssd, struct write_pointer *w
 
                 // TODO: do the group-borrow work here;
                 // bool res = borrow_or_gc(ssd, wpp);
-                // struct timespec time1, time2;
+                //struct timespec time1, time2;
 
-                // clock_gettime(CLOCK_MONOTONIC, &time1);
+                //clock_gettime(CLOCK_MONOTONIC, &time1);
                 bool res = should_do_gc_v3(ssd, wpp);
-                // clock_gettime(CLOCK_MONOTONIC, &time2);
+                //clock_gettime(CLOCK_MONOTONIC, &time2);
                 
-                // ssd->stat.GC_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
+                //ssd->stat.GC_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
                 
                 
                 if (!res)
@@ -1004,6 +1004,7 @@ static void ssd_init_statistics(struct ssd *ssd)
     st->predict_time = 0;
     st->calculate_time = 0;
     st->sort_time = 0;
+	st->train_time = 0;
     st->model_training_nums = 0;
     // st->max_read_lpn = 0;
     // st->min_read_lpn = INVALID_LPN;
@@ -2244,7 +2245,7 @@ static void gc_read_all_valid_data(struct ssd *ssd, struct ppa *tppa, uint64_t g
 
 
 static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t group_gtd_lpns[][512], int *group_gtd_index, int start_gtd) {
-    // struct timespec time1, time2;
+    //struct timespec time1, time2;
     printf("Model Training...\n");
     ssd->stat.model_training_nums++;
     const int trans_ent = ssd->sp.ents_per_pg;
@@ -2253,6 +2254,9 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
     uint64_t train_vppns[parallel][trans_ent];
     int success = 0;
     int total = 0;
+
+	//clock_gettime(CLOCK_MONOTONIC, &time1);
+
     // gc_line_num++;
     for (int i = 0; i < parallel; i++) {
         total += group_gtd_index[i];
@@ -2260,11 +2264,11 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
         // * first sort the lpns
         
 
-        // clock_gettime(CLOCK_MONOTONIC, &time1);
+        //clock_gettime(CLOCK_MONOTONIC, &time1);
         quick_sort(group_gtd_lpns[i], 0, group_gtd_index[i]-1);
-        // clock_gettime(CLOCK_MONOTONIC, &time2);
+        //clock_gettime(CLOCK_MONOTONIC, &time2);
 
-        // ssd->stat.sort_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
+        //ssd->stat.sort_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
 
         // * second write them back, collect the ppa
         for (int pgi = 0; pgi < group_gtd_index[i]; pgi++) {
@@ -2378,6 +2382,8 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
             ln->success_ratio = lr_success*1.0/lr_total;
         }
     }
+	//clock_gettime(CLOCK_MONOTONIC, &time2);
+	//ssd->stat.train_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
 }
 
 static int batch_line_do_gc(struct ssd* ssd, bool force, struct write_pointer *wpp, struct line *delete_line) {
@@ -2418,8 +2424,12 @@ static int batch_line_do_gc(struct ssd* ssd, bool force, struct write_pointer *w
     clear_all_write_pointer_victim_lines(wpl, wpp);
     
     
+	struct timespec time1, time2;
 
+	clock_gettime(CLOCK_MONOTONIC, &time1);
     model_training(ssd, wpp, group_gtd_lpns, group_gtd_index, start_gtd);
+	clock_gettime(CLOCK_MONOTONIC, &time2);
+	ssd->stat.train_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
     /* update line status */
     
 
@@ -2450,7 +2460,14 @@ static int line_do_gc(struct ssd *ssd, bool force, struct write_pointer *wpp, st
 
     gc_read_all_valid_data(ssd, &ppa, group_gtd_lpns, group_gtd_index, &start_gtd);
 
+	struct timespec time1, time2;
+
+	clock_gettime(CLOCK_MONOTONIC, &time1);
+
     model_training(ssd, wpp, group_gtd_lpns, group_gtd_index, start_gtd);
+
+	clock_gettime(CLOCK_MONOTONIC, &time2);
+	ssd->stat.train_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
 
     free_all_blocks(ssd, &ppa);
 
@@ -2537,6 +2554,8 @@ void count_segments(struct ssd* ssd) {
 	printf("GC cnt: %d\n", ssd->stat.gc_cnt);
 	printf("waf_ssd_write: %ld\n", ssd->stat.waf_ssd_write);
 	printf("waf_host_write: %ld\n", ssd->stat.waf_host_write);
+	printf("model train time: %lld\n", (long long)ssd->stat.train_time);
+	printf("GC time: %lld\n", (long long)ssd->stat.GC_time);
 
     ssd->stat.access_cnt = 0;
     ssd->stat.cmt_hit_cnt = 0;
@@ -2683,12 +2702,15 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
     uint64_t curlat = 0, maxlat = 0;
     int sequence_cnt = 0;
 
+
     if (end_lpn >= spp->tt_pgs) {
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
     }
 
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
         curlat = 0;
+		ssd->stat.access_cnt++;
+
         // clock_gettime(CLOCK_MONOTONIC, &time1);
         // 1. first get the write pointer
         int gtd_index = lpn/spp->ents_per_pg;
@@ -2703,9 +2725,10 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         
         cmt_entry = cmt_hit(ssd, lpn);
         if (cmt_entry) {		// cmt hit!!
-            // ssd->stat.cmt_hit_cnt++;
+            ssd->stat.cmt_hit_cnt++;
         } else {				// cmt miss!!
-            last_lpn = (lpn / spp->ents_per_pg + 1) * spp->ents_per_pg - 1;
+            ssd->stat.cmt_miss_cnt++;
+			last_lpn = (lpn / spp->ents_per_pg + 1) * spp->ents_per_pg - 1;
             last_lpn = (last_lpn < end_lpn) ? last_lpn : end_lpn;
             process_translation_page_write(ssd, req, lpn, last_lpn);
             ppa = get_maptbl_ent(ssd, lpn);

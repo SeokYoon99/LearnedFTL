@@ -916,6 +916,9 @@ static uint64_t translation_page_write(struct ssd *ssd, struct ppa *old_ppa)
     twr.stime = 0;
     lat = ssd_advance_status(ssd, &new_ppa, &twr);
 
+	ssd->stat.waf_host_write++;
+	ssd->stat.waf_ssd_write++;
+
     return lat;
 }
 
@@ -940,6 +943,9 @@ static uint64_t translation_page_new_write(struct ssd *ssd, uint64_t tvpn)
     twr.cmd = NAND_WRITE;
     twr.stime = 0;
     lat = ssd_advance_status(ssd, &new_ppa, &twr);
+
+	ssd->stat.waf_host_write++;
+	ssd->stat.waf_ssd_write++;
 
     return lat;
 }
@@ -1139,6 +1145,8 @@ static uint64_t gc_write_page(struct ssd *ssd, struct ppa *old_ppa)
         gcw.stime = 0;
         ssd_advance_status(ssd, &new_ppa, &gcw);
     }
+	
+	ssd->stat.waf_ssd_write++;
 
     /* advance per-ch gc_endtime as well */
 #if 0
@@ -1177,6 +1185,8 @@ static uint64_t gc_translation_page_write(struct ssd *ssd, struct ppa *old_ppa)
         gcw.stime = 0;
         ssd_advance_status(ssd, &new_ppa, &gcw);
     }
+	
+	ssd->stat.waf_ssd_write++;
 
     /* advance per-ch gc_endtime as well */
 #if 0
@@ -1379,6 +1389,8 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
 		printf("cmt hit cnt: %lld\n", (long long)st->cmt_hit_cnt);
 		printf("cmt miss cnt: %lld\n", (long long)st->cmt_miss_cnt);
 		printf("GC cnt: %d\n", st->gc_cnt);
+		printf("waf_ssd_write: %ld\n", ssd->stat.waf_ssd_write);
+		printf("waf_host_write: %ld\n", ssd->stat.waf_host_write);
 	}
 
 
@@ -1444,6 +1456,8 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
     }
 
+	ssd->stat.access_cnt++;
+
     while (should_gc_high(ssd)) {
         /* perform GC here until !should_gc(ssd) */
         r = do_gc(ssd, true);
@@ -1455,7 +1469,7 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         //st->access_cnt++;
         cmt_entry = cmt_hit(ssd, lpn);
         if (cmt_entry) {
-            //st->cmt_hit_cnt++;
+            ssd->stat.cmt_hit_cnt++;
         } else {
             //st->cmt_miss_cnt++;
             process_translation_page_write(ssd, req, lpn);
@@ -1495,6 +1509,9 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         /* get latency statistics */
         curlat = ssd_advance_status(ssd, &ppa, &swr);
         maxlat = (curlat > maxlat) ? curlat : maxlat;
+
+		ssd->stat.waf_host_write++;
+		ssd->stat.waf_ssd_write++;
     }
 
     return maxlat;
