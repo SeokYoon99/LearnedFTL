@@ -456,7 +456,7 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->secsz = 512;
     spp->secs_per_pg = 8;
     spp->pgs_per_blk = 512;
-    spp->blks_per_pl = 128; /* 16GB */
+    spp->blks_per_pl = 256; /* 16GB */
     spp->pls_per_lun = 1;
     spp->luns_per_ch = 8;
     spp->nchs = 8;
@@ -478,9 +478,9 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->pgs_per_ch = spp->pgs_per_lun * spp->luns_per_ch;
     spp->tt_pgs = spp->pgs_per_ch * spp->nchs;
 
-    spp->blks_per_lun = spp->blks_per_pl * spp->pls_per_lun;
-    spp->blks_per_ch = spp->blks_per_lun * spp->luns_per_ch;
-    spp->tt_blks = spp->blks_per_ch * spp->nchs;
+    spp->blks_per_lun = spp->blks_per_pl * spp->pls_per_lun;	//256*1
+    spp->blks_per_ch = spp->blks_per_lun * spp->luns_per_ch;	//256*8
+    spp->tt_blks = spp->blks_per_ch * spp->nchs;				//256*8*8
 
     spp->pls_per_ch =  spp->pls_per_lun * spp->luns_per_ch;
     spp->tt_pls = spp->pls_per_ch * spp->nchs;
@@ -496,13 +496,14 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->gc_thres_pcent = 0.75;
     spp->gc_thres_lines = (int)((1 - spp->gc_thres_pcent) * spp->tt_lines);
     spp->gc_thres_pcent_high = 0.95;
-    spp->gc_thres_lines_high = (int)((1 - spp->gc_thres_pcent_high) * spp->tt_lines);
-    spp->enable_gc_delay = true;
+    //spp->gc_thres_lines_high = (int)((1 - spp->gc_thres_pcent_high) * spp->tt_lines);
+    spp->gc_thres_lines_high = 8;
+	spp->enable_gc_delay = true;
 
-    spp->ents_per_pg = 256;
+    spp->ents_per_pg = 512;
     spp->tt_gtd_size = spp->tt_pgs / spp->ents_per_pg;
     // spp->tt_cmt_size = spp->tt_blks / 2;
-    spp->tt_cmt_size = 4096;
+    spp->tt_cmt_size = 16384;
 
 
     // * for virtual ppn
@@ -1802,6 +1803,7 @@ static void delete_seg(learned_mgmt* lm, segment_param* sp, segment* seg, int se
 
 static void compact(struct ssd* ssd, learned_mgmt* lm) {
     // TODO: Step1 先将所有的段进行合并
+	// 모든 segment 병합
 
     printf("compact\n");
     uint8_t get_lpns[256];
@@ -1835,6 +1837,7 @@ static void compact(struct ssd* ssd, learned_mgmt* lm) {
                 memset(get_second_lpns, 0, sizeof(get_second_lpns));
                 if (delete_flag) {
                     // TODO: 删除此segment
+					// segment 삭제
                     segment* tmp = valid_seg;
                     prev_seg->next = valid_seg->next;
                     valid_seg = valid_seg->next;
@@ -2300,7 +2303,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
             continue;
         }
 
-        for (int i = 0; i < 1; i++) {
+        for (int i = 0; i < ssd->sp.buffer_size; i++) {
             if (ssd->buffer_lpns[i] == lpn) {
                 sublat = 0;
                 find_in_flag = true;
@@ -2313,6 +2316,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
             maxlat = (sublat > maxlat) ? sublat : maxlat;
             continue;
         }
+
         uint64_t tvpn = lpn/spp->ents_per_pg;
         cmt_ent = cmt_hit(ssd, tvpn);
 
@@ -2450,6 +2454,7 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
             compact(ssd, ssd->lem);
 
             // TODO: compact结束之后执行GC
+			// compact 끝난 후 GC 실행
         }
         
         for (int i = 0; i < ssd->sp.buffer_size; i++) {

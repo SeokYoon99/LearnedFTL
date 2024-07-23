@@ -239,7 +239,7 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->secsz = 512;
     spp->secs_per_pg = 8;
     spp->pgs_per_blk = 512;
-    spp->blks_per_pl = 128; /* 16GB */
+    spp->blks_per_pl = 256; /* 16GB */
     spp->pls_per_lun = 1;
     spp->luns_per_ch = 8;
     spp->nchs = 8;
@@ -261,7 +261,7 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->pgs_per_ch = spp->pgs_per_lun * spp->luns_per_ch;
     spp->tt_pgs = spp->pgs_per_ch * spp->nchs;
 
-    spp->blks_per_lun = spp->blks_per_pl * spp->pls_per_lun;
+    spp->blks_per_lun = spp->blks_per_pl * spp->pls_per_lun;	//	256
     spp->blks_per_ch = spp->blks_per_lun * spp->luns_per_ch;
     spp->tt_blks = spp->blks_per_ch * spp->nchs;
 
@@ -274,13 +274,14 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->blks_per_line = spp->tt_luns; /* TODO: to fix under multiplanes */
     spp->pgs_per_line = spp->blks_per_line * spp->pgs_per_blk;
     spp->secs_per_line = spp->pgs_per_line * spp->secs_per_pg;
-    spp->tt_lines = spp->blks_per_lun; /* TODO: to fix under multiplanes */
+    spp->tt_lines = spp->blks_per_lun; /* TODO: to fix under multiplanes */	// blks_per_pl
 
     spp->gc_thres_pcent = 0.75;
-    spp->gc_thres_lines = (int)((1 - spp->gc_thres_pcent) * spp->tt_lines);
+    spp->gc_thres_lines = (int)((1 - spp->gc_thres_pcent) * spp->tt_lines);	//64
     spp->gc_thres_pcent_high = 0.95;
-    spp->gc_thres_lines_high = (int)((1 - spp->gc_thres_pcent_high) * spp->tt_lines);
-    spp->enable_gc_delay = true;
+    //spp->gc_thres_lines_high = (int)((1 - spp->gc_thres_pcent_high) * spp->tt_lines);//12
+	spp->gc_thres_lines_high = 8; 
+	spp->enable_gc_delay = true;
 
 
     check_params(spp);
@@ -648,6 +649,8 @@ static void gc_read_page(struct ssd *ssd, struct ppa *ppa)
 /* move valid page data (already in DRAM) from victim line to a new page */
 static uint64_t gc_write_page(struct ssd *ssd, struct ppa *old_ppa)
 {
+
+	printf("gc_write_page!!\n");
     struct ppa new_ppa;
     struct nand_lun *new_lun;
     uint64_t lpn = get_rmap_ent(ssd, old_ppa);
@@ -671,7 +674,7 @@ static uint64_t gc_write_page(struct ssd *ssd, struct ppa *old_ppa)
         gcw.stime = 0;
         ssd_advance_status(ssd, &new_ppa, &gcw);
     }
-	ssd->stat.waf_ssd_write++;
+	//ssd->stat.waf_ssd_write++;
 
     /* advance per-ch gc_endtime as well */
 #if 0
@@ -710,6 +713,7 @@ static struct line *select_victim_line(struct ssd *ssd, bool force)
 /* here ppa identifies the block we want to clean */
 static void clean_one_block(struct ssd *ssd, struct ppa *ppa)
 {
+	//printf("clean_one_block\n");
     struct ssdparams *spp = &ssd->sp;
     struct nand_page *pg_iter = NULL;
     int cnt = 0;
@@ -723,6 +727,7 @@ static void clean_one_block(struct ssd *ssd, struct ppa *ppa)
             gc_read_page(ssd, ppa);
             /* delay the maptbl update until "write" happens */
             gc_write_page(ssd, ppa);
+			ssd->stat.waf_ssd_write++;
             cnt++;
         }
     }
@@ -744,6 +749,7 @@ static void mark_line_free(struct ssd *ssd, struct ppa *ppa)
 static int do_gc(struct ssd *ssd, bool force)
 {
 	ssd->stat.gc_cnt++;
+	//printf("do_gc!!!\n");
 
     struct line *victim_line = NULL;
     struct ssdparams *spp = &ssd->sp;
@@ -951,9 +957,9 @@ static void *ftl_thread(void *arg)
             }
 
             /* clean one line if needed (in the background) */
-            if (should_gc(ssd)) {
+             /*if (should_gc(ssd)) {
                 do_gc(ssd, false);
-            }
+            }*/ 
         }
     }
 

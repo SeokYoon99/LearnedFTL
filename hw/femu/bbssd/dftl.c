@@ -402,7 +402,7 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->secsz = 512;
     spp->secs_per_pg = 8;
     spp->pgs_per_blk = 512;
-    spp->blks_per_pl = 128; /* 16GB */
+    spp->blks_per_pl = 256; /* 16GB */
     spp->pls_per_lun = 1;
     spp->luns_per_ch = 8;
     spp->nchs = 8;
@@ -424,9 +424,9 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->pgs_per_ch = spp->pgs_per_lun * spp->luns_per_ch;
     spp->tt_pgs = spp->pgs_per_ch * spp->nchs;
 
-    spp->blks_per_lun = spp->blks_per_pl * spp->pls_per_lun;	// 128 
-    spp->blks_per_ch = spp->blks_per_lun * spp->luns_per_ch;	// 128 * 8 
-    spp->tt_blks = spp->blks_per_ch * spp->nchs;				// 128 * 8 * 8
+    spp->blks_per_lun = spp->blks_per_pl * spp->pls_per_lun;	// 256 
+    spp->blks_per_ch = spp->blks_per_lun * spp->luns_per_ch;	// 256 * 8
+    spp->tt_blks = spp->blks_per_ch * spp->nchs;				// 256 * 8 * 8
 
     spp->pls_per_ch =  spp->pls_per_lun * spp->luns_per_ch;
     spp->tt_pls = spp->pls_per_ch * spp->nchs;
@@ -442,12 +442,14 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->gc_thres_pcent = 0.75;
     spp->gc_thres_lines = (int)((1 - spp->gc_thres_pcent) * spp->tt_lines);
     spp->gc_thres_pcent_high = 0.95;
-    spp->gc_thres_lines_high = (int)((1 - spp->gc_thres_pcent_high) * spp->tt_lines);
+    //spp->gc_thres_lines_high = (int)((1 - spp->gc_thres_pcent_high) * spp->tt_lines);
+	spp->gc_thres_lines_high = 8;
     spp->enable_gc_delay = true;
 
     spp->ents_per_pg = 512;
     spp->tt_gtd_size = spp->tt_pgs / spp->ents_per_pg;
-    spp->tt_cmt_size = spp->tt_blks / 2;
+    //spp->tt_cmt_size = spp->tt_blks / 2;
+	spp->tt_cmt_size = spp->tt_blks;	// 16384
 
     check_params(spp);
 }
@@ -576,10 +578,12 @@ static void ssd_init_statistics(struct ssd *ssd)
 	st->waf_host_write = 0;
 	st->waf_ssd_write = 0;
 	st->gc_cnt = 0;
-    st->cmt_hit_cnt = 0;
+    st->read_cmt_hit_cnt = 0;
+	st->write_cmt_hit_cnt = 0;
     st->cmt_miss_cnt = 0;
     st->cmt_hit_ratio = 0;
-    st->access_cnt = 0;
+    st->read_access_cnt = 0;
+	st->write_access_cnt = 0;
 }
 
 void ssd_init(FemuCtrl *n)
@@ -1385,12 +1389,21 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
 
 	if(req->cmd.cdw10 == 100){
 		printf("DFTL!!!\n");
-		printf("total access cnt: %lld\n", (long long)st->access_cnt);
-		printf("cmt hit cnt: %lld\n", (long long)st->cmt_hit_cnt);
+		printf("Read access cnt: %lld\n", (long long)st->read_access_cnt);
+		printf("Write access cnt: %lld\n", (long long)st->write_access_cnt);
+		printf("Read cmt hit cnt: %lld\n", (long long)st->read_cmt_hit_cnt);
+		printf("Write cmt hit cnt: %lld\n", (long long)st->write_cmt_hit_cnt);
 		printf("cmt miss cnt: %lld\n", (long long)st->cmt_miss_cnt);
 		printf("GC cnt: %d\n", st->gc_cnt);
 		printf("waf_ssd_write: %ld\n", ssd->stat.waf_ssd_write);
 		printf("waf_host_write: %ld\n", ssd->stat.waf_host_write);
+
+		ssd->stat.read_access_cnt = 0;
+		ssd->stat.write_access_cnt = 0;
+		ssd->stat.read_cmt_hit_cnt = 0;
+		ssd->stat.write_cmt_hit_cnt = 0;
+		ssd->stat.waf_ssd_write = 0;
+		ssd->stat.waf_host_write = 0;
 	}
 
 
@@ -1400,13 +1413,15 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
 
     /* normal IO read path */
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
-        st->access_cnt++;
+        
+		st->read_access_cnt++;
+
         if (cmt_hit(ssd, lpn)) {
-            st->cmt_hit_cnt++;
+            st->read_cmt_hit_cnt++;
             ppa = get_maptbl_ent(ssd, lpn);
             if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
-				st->cmt_hit_cnt--;
-				st->access_cnt--;
+				st->read_cmt_hit_cnt--;
+				st->read_access_cnt--;
                 //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
                 //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
                 //ppa.g.ch, ppa.g.lun, ppa.g.blk, ppa.g.pl, ppa.g.pg, ppa.g.sec);
@@ -1456,7 +1471,7 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
     }
 
-	ssd->stat.access_cnt++;
+	//ssd->stat.write_access_cnt++;
 
     while (should_gc_high(ssd)) {
         /* perform GC here until !should_gc(ssd) */
@@ -1466,14 +1481,15 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
     }
 
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
-        //st->access_cnt++;
+        //st->write_access_cnt++;
         cmt_entry = cmt_hit(ssd, lpn);
         if (cmt_entry) {
-            ssd->stat.cmt_hit_cnt++;
+            ssd->stat.write_cmt_hit_cnt++;
         } else {
             //st->cmt_miss_cnt++;
             process_translation_page_write(ssd, req, lpn);
         }
+
         ppa = get_maptbl_ent(ssd, lpn);
 
         cmt_entry = find_hash_entry(&ssd->cm.ht, lpn);
@@ -1569,9 +1585,9 @@ static void *ftl_thread(void *arg)
             }
 
             /* clean one line if needed (in the background) */
-            if (should_gc(ssd)) {
+            /*if (should_gc(ssd)) {
                 do_gc(ssd, false);
-            }
+            }*/
         }
     }
 

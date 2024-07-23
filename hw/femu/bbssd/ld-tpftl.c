@@ -22,8 +22,11 @@
 // static int hit_num = 0;
 // static int gc_num = 0;
 // static int gc_line_num = 0;
+
+// gc 매개변수 : gtd_wp가 몇개의 line을 사용했을 때 GC를 시작할지 설정
 static int gc_threshold = 5;   // ! gc参数：当一个gtd_wp使用了多少个Line时开始GC
-static int free_line_threshold = 3;    // ! gc参数：当还剩多少未使用的free_line时开始GC
+// gc 매개변수 : 사용하지 않은 free_line이 얼마나 남았을 때 GC를 시작할지 설정
+static int free_line_threshold = 9;    // ! gc参数：当还剩多少未使用的free_line时开始GC
 // static int train_num = 0;
 
 // static FILE* gc_fp;
@@ -751,7 +754,7 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->secsz = 512;
     spp->secs_per_pg = 8;
     spp->pgs_per_blk = 512;
-    spp->blks_per_pl = 128; /* 32GB */
+    spp->blks_per_pl = 256; /* 32GB */
     spp->pls_per_lun = 1;
     spp->luns_per_ch = 8;   /* default 8 */
     spp->nchs = 8;          /* default 8 */
@@ -809,8 +812,9 @@ static void ssd_init_params(struct ssdparams *spp)
     printf("total pages: %d\n", spp->tt_line_wps);
 
     spp->tt_gtd_size = spp->tt_pgs / spp->ents_per_pg;		// 256 * 64
-    spp->tt_cmt_size = 4096;
-    spp->enable_request_prefetch = true;    /* cannot set false! */
+    spp->tt_cmt_size = 8192;
+    //spp->tt_cmt_size = 125000;
+	spp->enable_request_prefetch = true;    /* cannot set false! */
     spp->enable_select_prefetch = true;
 
     // * for virtual ppn
@@ -993,10 +997,12 @@ static void ssd_init_statistics(struct ssd *ssd)
 	st->waf_host_write = 0;
 	st->waf_ssd_write = 0;
 	st->gc_cnt = 0;
-    st->cmt_hit_cnt = 0;
+    st->read_cmt_hit_cnt = 0;
+	st->write_cmt_hit_cnt = 0;
     st->cmt_miss_cnt = 0;	// cmt miss -> gtd access & bitmap check
     st->cmt_hit_ratio = 0;
-    st->access_cnt = 0;		// 들어오는 read request #
+    st->read_access_cnt = 0;		// 들어오는 read request #
+	st->write_access_cnt = 0;
     st->model_hit_num = 0;	// cmt miss -> bitmap hit
     st->model_use_num = 0;
     st->model_out_range = 0;
@@ -2226,7 +2232,7 @@ static void gc_read_all_valid_data(struct ssd *ssd, struct ppa *tppa, uint64_t g
             
 
             lunp->gc_endtime = lunp->next_lun_avail_time;
-            ssd->stat.GC_time += use_lat;
+            //ssd->stat.GC_time += use_lat;
             // clean_one_block_through_line_wp(ssd, &ppa, wpp);
             // mark_block_free(ssd, &ppa);
 
@@ -2424,12 +2430,12 @@ static int batch_line_do_gc(struct ssd* ssd, bool force, struct write_pointer *w
     clear_all_write_pointer_victim_lines(wpl, wpp);
     
     
-	struct timespec time1, time2;
+	//struct timespec time1, time2;
 
-	clock_gettime(CLOCK_MONOTONIC, &time1);
+	//clock_gettime(CLOCK_MONOTONIC, &time1);
     model_training(ssd, wpp, group_gtd_lpns, group_gtd_index, start_gtd);
-	clock_gettime(CLOCK_MONOTONIC, &time2);
-	ssd->stat.train_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
+	//clock_gettime(CLOCK_MONOTONIC, &time2);
+	//ssd->stat.train_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
     /* update line status */
     
 
@@ -2460,14 +2466,14 @@ static int line_do_gc(struct ssd *ssd, bool force, struct write_pointer *wpp, st
 
     gc_read_all_valid_data(ssd, &ppa, group_gtd_lpns, group_gtd_index, &start_gtd);
 
-	struct timespec time1, time2;
+	//struct timespec time1, time2;
 
-	clock_gettime(CLOCK_MONOTONIC, &time1);
+	//clock_gettime(CLOCK_MONOTONIC, &time1);
 
     model_training(ssd, wpp, group_gtd_lpns, group_gtd_index, start_gtd);
 
-	clock_gettime(CLOCK_MONOTONIC, &time2);
-	ssd->stat.train_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
+	//clock_gettime(CLOCK_MONOTONIC, &time2);
+	//ssd->stat.train_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
 
     free_all_blocks(ssd, &ppa);
 
@@ -2545,8 +2551,10 @@ static bool model_predict(struct ssd *ssd, uint64_t lpn, struct ppa *ppa) {
 
 
 void count_segments(struct ssd* ssd) {
-    printf("total access cnt: %lld\n", (long long)ssd->stat.access_cnt);
-    printf("cmt hit cnt: %lld\n", (long long)ssd->stat.cmt_hit_cnt);
+    printf("total Read access cnt: %lld\n", (long long)ssd->stat.read_access_cnt);
+	printf("total Write access cnt: %lld\n", (long long)ssd->stat.write_access_cnt);
+    printf("Read cmt hit cnt: %lld\n", (long long)ssd->stat.read_cmt_hit_cnt);
+	printf("Write cmt hit cnt: %lld\n", (long long)ssd->stat.write_cmt_hit_cnt);
 	printf("cmt miss cnt: %lld\n", (long long)ssd->stat.cmt_miss_cnt);
     printf("model use cnt: %lld\n", (long long)ssd->stat.model_use_num);
 	printf("double read cnt: %lld\n", (long long)ssd->stat.double_read);
@@ -2554,12 +2562,16 @@ void count_segments(struct ssd* ssd) {
 	printf("GC cnt: %d\n", ssd->stat.gc_cnt);
 	printf("waf_ssd_write: %ld\n", ssd->stat.waf_ssd_write);
 	printf("waf_host_write: %ld\n", ssd->stat.waf_host_write);
-	printf("model train time: %lld\n", (long long)ssd->stat.train_time);
-	printf("GC time: %lld\n", (long long)ssd->stat.GC_time);
+	//printf("model train time: %lld\n", (long long)ssd->stat.train_time);
+	//printf("GC time: %lld\n\n", (long long)ssd->stat.GC_time);
 
-    ssd->stat.access_cnt = 0;
-    ssd->stat.cmt_hit_cnt = 0;
-    ssd->stat.model_hit_num = 0;
+	ssd->stat.read_access_cnt = 0;
+	ssd->stat.write_access_cnt = 0;
+	ssd->stat.read_cmt_hit_cnt = 0;
+	ssd->stat.write_cmt_hit_cnt = 0;
+	ssd->stat.waf_ssd_write = 0;
+	ssd->stat.waf_host_write = 0;
+
 }
 
 static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
@@ -2580,6 +2592,8 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
 		count_segments(ssd);
 	}
 
+	printf("Input read lba : %ld\n", lba);
+
 
     if (end_lpn >= spp->tt_pgs) {
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
@@ -2588,7 +2602,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
     /* normal IO read path */
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
         // clock_gettime(CLOCK_MONOTONIC, &time1);
-        ssd->stat.access_cnt++;
+        ssd->stat.read_access_cnt++;
         sublat = 0;
         
         // 1.1. first look up in the cmt
@@ -2596,14 +2610,14 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
         
 		// cmt hit!!
 		if (cmt_entry) {
-            ssd->stat.cmt_hit_cnt++;
+            ssd->stat.read_cmt_hit_cnt++;
             ppa = get_maptbl_ent(ssd, lpn);
             if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {	//ppa가 유효한지 검사
                 //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
                 //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
                 //ppa.g.ch, ppa.g.lun, ppa.g.blk, ppa.g.pl, ppa.g.pg, ppa.g.sec);
-                ssd->stat.access_cnt--;
-                ssd->stat.cmt_hit_cnt--;
+                ssd->stat.read_access_cnt--;
+                ssd->stat.read_cmt_hit_cnt--;
                 ssd->stat.model_out_range++;
                 continue;
             }
@@ -2653,7 +2667,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
             //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
             //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
             //ppa.g.ch, ppa.g.lun, ppa.g.blk, ppa.g.pl, ppa.g.pg, ppa.g.sec);
-            ssd->stat.access_cnt--;
+            ssd->stat.read_access_cnt--;
             ssd->stat.cmt_miss_cnt--;
             // ssd->stat.model_out_range++;
             continue;
@@ -2668,7 +2682,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
     ssd_read_latency:
 
         if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
-            ssd->stat.access_cnt--;
+            ssd->stat.read_access_cnt--;
             //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
             //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
             //ppa.g.ch, ppa.g.lun, ppa.g.blk, ppa.g.pl, ppa.g.pg, ppa.g.sec);
@@ -2707,9 +2721,11 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
     }
 
+	printf("Input write lba : %ld\n", lba);
+
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
         curlat = 0;
-		ssd->stat.access_cnt++;
+		ssd->stat.write_access_cnt++;
 
         // clock_gettime(CLOCK_MONOTONIC, &time1);
         // 1. first get the write pointer
@@ -2725,7 +2741,7 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         
         cmt_entry = cmt_hit(ssd, lpn);
         if (cmt_entry) {		// cmt hit!!
-            ssd->stat.cmt_hit_cnt++;
+            ssd->stat.write_cmt_hit_cnt++;
         } else {				// cmt miss!!
             ssd->stat.cmt_miss_cnt++;
 			last_lpn = (lpn / spp->ents_per_pg + 1) * spp->ents_per_pg - 1;
@@ -2740,6 +2756,7 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
 
 
         if (mapped_ppa(&ppa)) {
+			//printf("mapped_ppa!!\n");
 			/* update old page information first */
             mark_page_invalid(ssd, &ppa);
             set_rmap_ent(ssd, INVALID_LPN, &ppa);
