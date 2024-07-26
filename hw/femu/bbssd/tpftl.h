@@ -282,10 +282,15 @@ struct cmt_mgmt {
 };
 
 struct statistics {
-    uint64_t cmt_hit_cnt;
+	long waf_host_write;
+	long waf_ssd_write;
+	int gc_cnt;
+    uint64_t read_cmt_hit_cnt;
+	uint64_t write_cmt_hit_cnt;
     uint64_t cmt_miss_cnt;
     double cmt_hit_ratio;
-    uint64_t access_cnt;
+    uint64_t read_access_cnt;
+	uint64_t write_access_cnt;
 };
 
 struct ssd {

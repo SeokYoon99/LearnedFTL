@@ -446,11 +446,11 @@ static void ssd_init_params(struct ssdparams *spp)
 {
     spp->secsz = 512;
     spp->secs_per_pg = 8;
-    spp->pgs_per_blk = 256;
-    spp->blks_per_pl = 256; /* 16GB */
+    spp->pgs_per_blk = 512;
+    spp->blks_per_pl = 128; /* 16GB */
     spp->pls_per_lun = 1;
     spp->luns_per_ch = 8;
-    spp->nchs = 4;
+    spp->nchs = 8;
 
     spp->pg_rd_lat = NAND_READ_LATENCY;
     spp->pg_wr_lat = NAND_PROG_LATENCY;
@@ -487,12 +487,14 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->gc_thres_pcent = 0.75;
     spp->gc_thres_lines = (int)((1 - spp->gc_thres_pcent) * spp->tt_lines);
     spp->gc_thres_pcent_high = 0.95;
-    spp->gc_thres_lines_high = (int)((1 - spp->gc_thres_pcent_high) * spp->tt_lines);
+    //spp->gc_thres_lines_high = (int)((1 - spp->gc_thres_pcent_high) * spp->tt_lines);
+	spp->gc_thres_lines_high = 8;
     spp->enable_gc_delay = true;
 
     spp->ents_per_pg = 512;
     spp->tt_gtd_size = spp->tt_pgs / spp->ents_per_pg;
-    spp->tt_cmt_size = spp->tt_blks / 2;
+    //spp->tt_cmt_size = spp->tt_blks / 2;
+	spp->tt_cmt_size = spp->tt_pgs * 0.03;
     spp->enable_request_prefetch = true;    /* cannot set false! */
     spp->enable_select_prefetch = true;
 
@@ -629,10 +631,15 @@ static void ssd_init_statistics(struct ssd *ssd)
 {
     struct statistics *st = &ssd->stat;
 
-    st->cmt_hit_cnt = 0;
+	st->waf_host_write = 0;
+	st->waf_ssd_write = 0;
+	st->gc_cnt = 0;
+	st->read_cmt_hit_cnt = 0;
+	st->write_cmt_hit_cnt = 0;
     st->cmt_miss_cnt = 0;
     st->cmt_hit_ratio = 0;
-    st->access_cnt = 0;
+    st->read_access_cnt = 0;
+	st->write_access_cnt = 0;
 }
 
 void ssd_init(FemuCtrl *n)
@@ -1032,6 +1039,9 @@ static uint64_t translation_write_page(struct ssd *ssd, struct ppa *old_ppa)
     twr.stime = 0;
     lat = ssd_advance_status(ssd, &new_ppa, &twr);
 
+	ssd->stat.waf_host_write++;
+	ssd->stat.waf_ssd_write++;
+
     return lat;
 }
 
@@ -1056,6 +1066,9 @@ static uint64_t translation_write_new_page(struct ssd *ssd, uint64_t tvpn)
     twr.cmd = NAND_WRITE;
     twr.stime = 0;
     lat = ssd_advance_status(ssd, &new_ppa, &twr);
+
+	ssd->stat.waf_host_write++;
+	ssd->stat.waf_ssd_write++;
 
     return lat;
 }
@@ -1673,6 +1686,8 @@ static uint64_t gc_translation_write_page(struct ssd *ssd, struct ppa *old_ppa)
         ssd_advance_status(ssd, &new_ppa, &gcw);
     }
 
+	ssd->stat.waf_ssd_write++;
+
     /* advance per-ch gc_endtime as well */
 #if 0
     new_ch = get_ch(ssd, &new_ppa);
@@ -1723,6 +1738,8 @@ static uint64_t gc_write_page(struct ssd *ssd, struct ppa *old_ppa)
         gcw.stime = 0;
         ssd_advance_status(ssd, &new_ppa, &gcw);
     }
+
+	 ssd->stat.waf_ssd_write++;
 
     /* advance per-ch gc_endtime as well */
 #if 0
@@ -1859,6 +1876,9 @@ static void mark_line_free(struct ssd *ssd, struct ppa *ppa)
 
 static int do_gc(struct ssd *ssd, bool force)
 {
+
+	ssd->stat.gc_cnt++;
+
     struct line *victim_line = NULL;
     struct ssdparams *spp = &ssd->sp;
     struct nand_lun *lunp;
@@ -1928,6 +1948,21 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
 
 	if(req->cmd.cdw10 == 100){
 		printf("tpftl!!!\n");
+		printf("Read access cnt: %lld\n", (long long)st->read_access_cnt);
+		printf("Write access cnt: %lld\n", (long long)st->write_access_cnt);
+		printf("Read cmt hit cnt: %lld\n", (long long)st->read_cmt_hit_cnt);
+		printf("Write cmt hit cnt: %lld\n", (long long)st->write_cmt_hit_cnt);
+		printf("cmt miss cnt: %lld\n", (long long)st->cmt_miss_cnt);
+		printf("GC cnt: %d\n", st->gc_cnt);
+		printf("waf_ssd_write: %ld\n", ssd->stat.waf_ssd_write);
+		printf("waf_host_write: %ld\n", ssd->stat.waf_host_write);
+		
+		ssd->stat.read_access_cnt = 0;
+		ssd->stat.write_access_cnt = 0;
+		ssd->stat.read_cmt_hit_cnt = 0;
+		ssd->stat.write_cmt_hit_cnt = 0;
+		ssd->stat.waf_ssd_write = 0;
+		ssd->stat.waf_host_write = 0;
 	}
 
     if (end_lpn >= spp->tt_pgs) {
@@ -1948,7 +1983,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
          */
 
         // clock_gettime(CLOCK_MONOTONIC, &t1);
-        st->access_cnt++;
+        st->read_access_cnt++;
         cmt_entry = cmt_hit(ssd, lpn);
 
         // clock_gettime(CLOCK_MONOTONIC, &t2);
@@ -1957,9 +1992,11 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
         // fflush(ssd->fpr);
 
         if (cmt_entry) {
-            st->cmt_hit_cnt++;
+            st->read_cmt_hit_cnt++;
             ppa = get_maptbl_ent(ssd, lpn);
             if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
+				st->read_cmt_hit_cnt--;
+				st->read_access_cnt--;
                 //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
                 //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
                 //ppa.g.ch, ppa.g.lun, ppa.g.blk, ppa.g.pl, ppa.g.pg, ppa.g.sec);
@@ -2047,7 +2084,7 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         // old_lun = NULL;
 
         // clock_gettime(CLOCK_MONOTONIC, &t1);
-        st->access_cnt++;
+        st->write_access_cnt++;
         cmt_entry = cmt_hit(ssd, lpn);
 
         // clock_gettime(CLOCK_MONOTONIC, &t2);
@@ -2056,7 +2093,7 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         // fflush(ssd->fpw);
 
         if (cmt_entry) {
-            st->cmt_hit_cnt++;
+            st->write_cmt_hit_cnt++;
             ppa = get_maptbl_ent(ssd, lpn);
         } else {
             st->cmt_miss_cnt++;
@@ -2129,6 +2166,9 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         /* get latency statistics */
         curlat = ssd_advance_status(ssd, &ppa, &swr);
         maxlat = (curlat > maxlat) ? curlat : maxlat;
+
+		ssd->stat.waf_host_write++;
+		ssd->stat.waf_ssd_write++;
     }
 
     return maxlat;
@@ -2186,9 +2226,9 @@ static void *ftl_thread(void *arg)
             }
 
             /* clean one line if needed (in the background) */
-            if (should_gc(ssd)) {
+            /*if (should_gc(ssd)) {
                 do_gc(ssd, false);
-            }
+            }*/
         }
     }
 

@@ -754,7 +754,7 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->secsz = 512;
     spp->secs_per_pg = 8;
     spp->pgs_per_blk = 512;
-    spp->blks_per_pl = 256; /* 32GB */
+    spp->blks_per_pl = 128; /* 32GB */
     spp->pls_per_lun = 1;
     spp->luns_per_ch = 8;   /* default 8 */
     spp->nchs = 8;          /* default 8 */
@@ -812,8 +812,9 @@ static void ssd_init_params(struct ssdparams *spp)
     printf("total pages: %d\n", spp->tt_line_wps);
 
     spp->tt_gtd_size = spp->tt_pgs / spp->ents_per_pg;		// 256 * 64
-    spp->tt_cmt_size = 8192;
+    //spp->tt_cmt_size = 4096;
     //spp->tt_cmt_size = 125000;
+	spp->tt_cmt_size = spp->tt_pgs * 0.015;
 	spp->enable_request_prefetch = true;    /* cannot set false! */
     spp->enable_select_prefetch = true;
 
@@ -1452,6 +1453,8 @@ static void insert_entry_to_cmt(struct ssd *ssd, uint64_t lpn, uint64_t ppn, int
     // }
     /* already pretreat TPnode position */
     tpnode = QTAILQ_FIRST(&cm->TPnode_list);
+
+	// tpnode가 없거나, tvpn이 다르면 새로운 tpnode 생성
     if (tpnode == NULL || tpnode->tvpn != tvpn) {
         //create and insert tpnode to TPnode_list
         tpnode = g_malloc0(sizeof(struct TPnode));
@@ -1530,6 +1533,7 @@ static int evict_entry_from_cmt(struct ssd *ssd)
         ftl_err("tpnode cannot be empty!");
 
     //find coldest clean entry
+	//cmt entry 얻기
     QTAILQ_FOREACH_REVERSE(cmt_entry, &tpnode->cmt_entry_list, entry) {
         if (cmt_entry->dirty == CLEAN) break;
     }
@@ -1538,6 +1542,7 @@ static int evict_entry_from_cmt(struct ssd *ssd)
     if (cmt_entry == NULL) {
         cmt_entry = QTAILQ_LAST(&tpnode->cmt_entry_list);
     }
+
     //evict entry in tpnode
     QTAILQ_REMOVE(&tpnode->cmt_entry_list, cmt_entry, entry);
     tpnode->cmt_entry_cnt--;
@@ -1735,7 +1740,7 @@ static struct nand_lun *process_translation_page_write(struct ssd *ssd, NvmeRequ
 
     //get gtd mapping physical page
     tvpn = lpn / spp->ents_per_pg;
-    ppa = get_gtd_ent_index(ssd, tvpn);		// 해당 gtd index에 해당하는 ppa
+    ppa = get_gtd_ent_index(ssd, tvpn);		// 해당 gtd index에 해당하는 ppa (TPPN)
 
     if (cm->used_cmt_entry_cnt == cm->tt_entries) {		// cmt에 entry 가득 찬 경우
         terminate_flag = evict_entry_from_cmt(ssd);
@@ -2551,6 +2556,7 @@ static bool model_predict(struct ssd *ssd, uint64_t lpn, struct ppa *ppa) {
 
 
 void count_segments(struct ssd* ssd) {
+	printf("LearnedFTL!!\n");
     printf("total Read access cnt: %lld\n", (long long)ssd->stat.read_access_cnt);
 	printf("total Write access cnt: %lld\n", (long long)ssd->stat.write_access_cnt);
     printf("Read cmt hit cnt: %lld\n", (long long)ssd->stat.read_cmt_hit_cnt);
@@ -2571,6 +2577,8 @@ void count_segments(struct ssd* ssd) {
 	ssd->stat.write_cmt_hit_cnt = 0;
 	ssd->stat.waf_ssd_write = 0;
 	ssd->stat.waf_host_write = 0;
+	ssd->stat.double_read = 0;
+	ssd->stat.model_use_num = 0;
 
 }
 
@@ -2612,6 +2620,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
 		if (cmt_entry) {
             ssd->stat.read_cmt_hit_cnt++;
             ppa = get_maptbl_ent(ssd, lpn);
+
             if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {	//ppa가 유효한지 검사
                 //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
                 //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
@@ -2669,6 +2678,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
             //ppa.g.ch, ppa.g.lun, ppa.g.blk, ppa.g.pl, ppa.g.pg, ppa.g.sec);
             ssd->stat.read_access_cnt--;
             ssd->stat.cmt_miss_cnt--;
+			ssd->stat.double_read--;
             // ssd->stat.model_out_range++;
             continue;
         }
@@ -2683,6 +2693,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
 
         if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
             ssd->stat.read_access_cnt--;
+			ssd->stat.model_use_num--;
             //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
             //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
             //ppa.g.ch, ppa.g.lun, ppa.g.blk, ppa.g.pl, ppa.g.pg, ppa.g.sec);

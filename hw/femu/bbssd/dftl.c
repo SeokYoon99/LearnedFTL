@@ -402,7 +402,7 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->secsz = 512;
     spp->secs_per_pg = 8;
     spp->pgs_per_blk = 512;
-    spp->blks_per_pl = 256; /* 16GB */
+    spp->blks_per_pl = 128; /* 16GB */
     spp->pls_per_lun = 1;
     spp->luns_per_ch = 8;
     spp->nchs = 8;
@@ -449,7 +449,9 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->ents_per_pg = 512;
     spp->tt_gtd_size = spp->tt_pgs / spp->ents_per_pg;
     //spp->tt_cmt_size = spp->tt_blks / 2;
-	spp->tt_cmt_size = spp->tt_blks;	// 16384
+	//spp->tt_cmt_size = spp->tt_blks;	// 16384
+	//spp->tt_cmt_size = 16384;
+	spp->tt_cmt_size = spp->tt_pgs * 0.03;
 
     check_params(spp);
 }
@@ -1067,7 +1069,7 @@ static struct nand_lun *process_translation_page_write(struct ssd *ssd, NvmeRequ
 
     //get gtd mapping physical page
     tvpn = lpn / spp->ents_per_pg;
-    ppa = get_gtd_ent(ssd, tvpn);
+    ppa = get_gtd_ent(ssd, tvpn);	// TPPN
 
     /* if it is a new write, not an update */
     if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
@@ -1471,8 +1473,6 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
     }
 
-	//ssd->stat.write_access_cnt++;
-
     while (should_gc_high(ssd)) {
         /* perform GC here until !should_gc(ssd) */
         r = do_gc(ssd, true);
@@ -1481,7 +1481,8 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
     }
 
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
-        //st->write_access_cnt++;
+        ssd->stat.write_access_cnt++;
+
         cmt_entry = cmt_hit(ssd, lpn);
         if (cmt_entry) {
             ssd->stat.write_cmt_hit_cnt++;
