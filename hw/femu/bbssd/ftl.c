@@ -239,7 +239,7 @@ static void ssd_init_params(struct ssdparams *spp)
     spp->secsz = 512;
     spp->secs_per_pg = 8;
     spp->pgs_per_blk = 512;
-    spp->blks_per_pl = 256; /* 16GB */
+    spp->blks_per_pl = 128; /* 16GB */
     spp->pls_per_lun = 1;
     spp->luns_per_ch = 8;
     spp->nchs = 8;
@@ -359,6 +359,11 @@ static void ssd_init_rmap(struct ssd *ssd)
     for (int i = 0; i < spp->tt_pgs; i++) {
         ssd->rmap[i] = INVALID_LPN;
     }
+
+	ssd->lpn_access_cnt = g_malloc0(sizeof(uint64_t) * spp->tt_pgs);
+	for (int j = 0; j < spp->tt_pgs; j++) {
+		ssd->lpn_access_cnt[j] = 0;
+	}
 }
 
 static void ssd_init_statistics(struct ssd *ssd)
@@ -650,7 +655,7 @@ static void gc_read_page(struct ssd *ssd, struct ppa *ppa)
 static uint64_t gc_write_page(struct ssd *ssd, struct ppa *old_ppa)
 {
 
-	printf("gc_write_page!!\n");
+	//printf("gc_write_page!!\n");
     struct ppa new_ppa;
     struct nand_lun *new_lun;
     uint64_t lpn = get_rmap_ent(ssd, old_ppa);
@@ -815,6 +820,12 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
 
 	}
 
+	if(req->cmd.cdw10 == 200){
+		for(int i = 0; i < spp->tt_pgs; i++){
+			printf("%d : %ld\n", i, ssd->lpn_access_cnt[i]);
+		}
+	}
+
 
     if (end_lpn >= spp->tt_pgs) {
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
@@ -822,6 +833,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
 
     /* normal IO read path */
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
+		ssd->lpn_access_cnt[lpn]++;
 		ssd->stat.access_cnt++;
 
         ppa = get_maptbl_ent(ssd, lpn);
@@ -929,7 +941,7 @@ static void *ftl_thread(void *arg)
 
             rc = femu_ring_dequeue(ssd->to_ftl[i], (void *)&req, 1);
             if (rc != 1) {
-                printf("FEMU: FTL to_ftl dequeue failed\n");
+                //printf("FEMU: FTL to_ftl dequeue failed\n");
             }
 
             ftl_assert(req);

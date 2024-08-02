@@ -1533,7 +1533,7 @@ static int evict_entry_from_cmt(struct ssd *ssd)
         ftl_err("tpnode cannot be empty!");
 
     //find coldest clean entry
-	//cmt entry 얻기
+	//flash update 피하기 위해 clean한 cmt entry 얻기
     QTAILQ_FOREACH_REVERSE(cmt_entry, &tpnode->cmt_entry_list, entry) {
         if (cmt_entry->dirty == CLEAN) break;
     }
@@ -1549,6 +1549,7 @@ static int evict_entry_from_cmt(struct ssd *ssd)
 
     tpnode->exist_ent[cmt_entry->lpn % spp->ents_per_pg] = 0;
 
+	//evict 하는 entry가 dirty면 flash에 update 해줘야 됨.
     if (cmt_entry->dirty == DIRTY) {
         tvpn = cmt_entry->lpn;
         gtd_ppa = get_gtd_ent(ssd, tvpn);
@@ -1559,11 +1560,10 @@ static int evict_entry_from_cmt(struct ssd *ssd)
             set_rmap_ent(ssd, INVALID_LPN, &gtd_ppa);
         }
         
-
-        
         translation_write_page(ssd, tvpn);
 
         //all dirty entry in TPnode update and write to a new translation page
+		//batch-update replacement : dirty entry가 evict 되면 해당 TPnode에 있는 다른 dirty entry들도 flash에 update해주고 clean 상태로 변경
         QTAILQ_FOREACH(tmp_entry, &tpnode->cmt_entry_list, entry) {
             if (tmp_entry->dirty == DIRTY)
                 tmp_entry->dirty = CLEAN;
@@ -1582,7 +1582,9 @@ static int evict_entry_from_cmt(struct ssd *ssd)
     QTAILQ_INSERT_TAIL(&cm->free_cmt_entry_list, cmt_entry, entry);
     cm->free_cmt_entry_cnt++;
     cm->used_cmt_entry_cnt--;
-    //if no entry in tpnode, evict tpnode
+    
+	//if no entry in tpnode, evict tpnode
+	//TPnode에 cmt entry가 0개가 된다면, 해당 TPnode 제거
     if (tpnode->cmt_entry_cnt == 0) {
         QTAILQ_REMOVE(&cm->TPnode_list, tpnode, entry);
 
@@ -1616,7 +1618,7 @@ static struct nand_lun *process_translation_page_read(struct ssd *ssd, NvmeReque
 
     //get gtd mapping physical page
     tvpn = lpn / spp->ents_per_pg;	
-    tppa = get_gtd_ent_index(ssd, tvpn);	// 해당 gtd index에 해당하는 ppa 
+    tppa = get_gtd_ent_index(ssd, tvpn);	// 해당 gtd index에 해당하는 tppn 
     if (!mapped_ppa(&tppa) || !valid_ppa(ssd, &tppa)) {
         //printf("%s,lpn(%" PRId64 ") not mapped to valid ppa\n", ssd->ssdname, lpn);
         //printf("Invalid ppa,ch:%d,lun:%d,blk:%d,pl:%d,pg:%d,sec:%d\n",
@@ -1631,7 +1633,7 @@ static struct nand_lun *process_translation_page_read(struct ssd *ssd, NvmeReque
         return NULL;
     } else {
         if (cm->used_cmt_entry_cnt == cm->tt_entries) {		// cmt에 entry 가득찬 경우
-            terminate_flag = evict_entry_from_cmt(ssd);
+            terminate_flag = evict_entry_from_cmt(ssd);		//TPnode가 제거되면 '1' 반환
         }
         //read latency
         translation_read_page(ssd, req, &tppa);		// first read
@@ -1644,6 +1646,8 @@ static struct nand_lun *process_translation_page_read(struct ssd *ssd, NvmeReque
     /* when tpnode has not been evicted, execute request-level prefetching, 
        end_lpn is the end of translation page or end of request, when evict
        a TPnode or at the end of translation page/request, stop */
+	// TPnode가 삭제되지 않았으면 
+	// last request까지 request-level prefetching 실행
     if (spp->enable_request_prefetch && !terminate_flag) {
         for (new_lpn = start_lpn + 1; new_lpn <= end_lpn; new_lpn++) {
             if (cmt_hit_no_move(ssd, new_lpn)) continue;
@@ -1659,10 +1663,12 @@ static struct nand_lun *process_translation_page_read(struct ssd *ssd, NvmeReque
             if (cm->used_cmt_entry_cnt == cm->tt_entries) {
                 terminate_flag = evict_entry_from_cmt(ssd);
             }
+			//prefetch로 들어온 애들은 tail에 삽입
             insert_entry_to_cmt(ssd, new_lpn, new_ppn, TAIL, true, next_avail_time);
             if (terminate_flag) break;
         }
     }
+
 
     /* when tpnode has not been evicted, execute selective prefetching 
        when at the end of a translation page or a TPnode is evicted, stop */
@@ -2496,8 +2502,9 @@ static bool model_predict(struct ssd *ssd, uint64_t lpn, struct ppa *ppa) {
     struct ssdparams *spp = &ssd->sp;
     int gtd_index = lpn/spp->ents_per_pg;
 
-    ssd->stat.model_use_num++;
-    // * 1.2.1. do the model prediction
+    //ssd->stat.model_use_num++;
+    
+	// * 1.2.1. do the model prediction
     uint64_t pred_lpn = lpn - ssd->lr_nodes[gtd_index].start_lpn;	// 모델 내 offset
     
 
@@ -2512,6 +2519,7 @@ static bool model_predict(struct ssd *ssd, uint64_t lpn, struct ppa *ppa) {
             break;
         }
     }
+	// -> 해당 lpn이 속한 lr_node 내 lr_breakpoint까지 찾기 완료
 
     // * start predict
     if (piece_wise_no != -1) {
@@ -2533,8 +2541,8 @@ static bool model_predict(struct ssd *ssd, uint64_t lpn, struct ppa *ppa) {
         // * pred_ppa在bitmap中命中
         
 
-        // * 按理说这时就应返回true，但有一些浮点数计算精度的问题，可能有的算不准，所以需要再验证一下
-        *ppa = get_maptbl_ent(ssd, lpn);
+        // true 반환하기 전, 한번 더 추가 검증 실행
+		*ppa = get_maptbl_ent(ssd, lpn);
         uint64_t actual_ppa = ppa2vppn(ssd, ppa);
         uint64_t read_pred_ppa = pred_ppa + ssd->lr_nodes[gtd_index].start_ppa;
         if (read_pred_ppa == actual_ppa) {
@@ -2654,6 +2662,7 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
                     bool f = model_predict(ssd, lpn, &ppa);
 
                     if (f) {
+						ssd->stat.model_use_num++;
                         goto ssd_read_latency;
                     }
                 }

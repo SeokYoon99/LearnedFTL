@@ -89,7 +89,7 @@ enum {
 typedef struct lr_breakpoint {
     float w;	// 기울기
     float b;	// 절편
-    int key;
+    int key;	// 시작 lpn
     int valid_cnt;
 }lr_breakpoint;
 
