@@ -90,7 +90,7 @@ typedef struct lr_breakpoint {
     float w;	// 기울기
     float b;	// 절편
     int key;	// 시작 lpn
-    int valid_cnt;
+    int valid_cnt;	// 구간 내 bitmap 중 1인 개수 
 }lr_breakpoint;
 
 // linear regression model
@@ -279,9 +279,11 @@ typedef struct line {
     int id;  /* line id, the same as corresponding block id */
     int ipc; /* invalid page count in this line */
     int vpc; /* valid page count in this line */
+			/*0으로 init, mark_page_valid() 시 ++ */
     int type;
 
     // * identify how many entries remain in this line
+	// pgs_per_line으로 초기화, get_new_line_page() 마다 --
     int rest;
     
     QTAILQ_ENTRY(line) entry; /* in either {free,victim,full} list */
@@ -299,7 +301,7 @@ struct wp_lines{
 struct write_pointer {
     struct line *curline;
     struct wp_lines *wpl;	//
-    int vic_cnt;			//
+    int vic_cnt;			// 할당받은 line 개수
     int ch;
     int lun;
     int pg;

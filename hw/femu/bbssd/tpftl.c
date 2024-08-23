@@ -1969,6 +1969,8 @@ static uint64_t ssd_read(struct ssd *ssd, NvmeRequest *req)
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
     }
 
+	printf("Input read lba : %ld\n", lba);
+
     /* normal IO read path */
     for (lpn = start_lpn; lpn <= end_lpn; lpn++) {
         /**
@@ -2072,6 +2074,8 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
     if (end_lpn >= spp->tt_pgs) {
         ftl_err("start_lpn=%"PRIu64",tt_pgs=%d\n", start_lpn, ssd->sp.tt_pgs);
     }
+
+	printf("Input write lba : %ld\n", lba);
 
     while (should_gc_high(ssd)) {
         /* perform GC here until !should_gc(ssd) */

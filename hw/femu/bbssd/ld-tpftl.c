@@ -167,6 +167,7 @@ static inline void set_maptbl_ent(struct ssd *ssd, uint64_t lpn, struct ppa *ppa
     ssd->maptbl[lpn] = *ppa;
 }
 
+// page index(SSD 내에서 페이지를 유일하게 식별하는 번호) 계산
 static uint64_t ppa2pgidx(struct ssd *ssd, struct ppa *ppa)
 {
     struct ssdparams *spp = &ssd->sp;
@@ -295,12 +296,13 @@ static void ssd_init_lines(struct ssd *ssd)
 }
 
 
-
+//write pointer 초기화 및 line 할당 하기 
 static void init_line_write_pointer(struct ssd *ssd, struct write_pointer *wpp, bool gc_flag)
 {
     struct line_mgmt *lm = &ssd->lm;
     struct line *curline = NULL;
     
+	// ssd_write 시에만 gtd_wps가 할당 받은 line이 없는데 free_line이 부족한 경우 GC 실행
     if (gc_flag) {
         if (lm->free_line_cnt < free_line_threshold) {
             //struct timespec time1, time2;
@@ -320,7 +322,6 @@ static void init_line_write_pointer(struct ssd *ssd, struct write_pointer *wpp, 
         printf("lines are less!\n");
     }
         
-
     curline = QTAILQ_FIRST(&lm->free_line_list);
     if (!curline) {
         ftl_err("No free lines left in [%s]31232131231321 !!!!\n", ssd->ssdname);
@@ -351,8 +352,6 @@ static void init_line_write_pointer(struct ssd *ssd, struct write_pointer *wpp, 
     }    
 
     insert_wp_lines(wpp);
-    
-
 }
 
 static void ssd_init_write_pointer(struct ssd *ssd)
@@ -376,7 +375,7 @@ static void ssd_init_write_pointer(struct ssd *ssd)
     ssd->trans_wp.id = ssd->sp.tt_lines;
     // init the rmap for lines
     ssd->line2write_pointer = g_malloc0(sizeof(struct write_pointer *) * ssd->sp.tt_lines);
-    init_line_write_pointer(ssd, &ssd->trans_wp, false);
+    init_line_write_pointer(ssd, &ssd->trans_wp, false);	//trans_wp에 line 할당 완료
 }
 
 static inline void check_addr(int a, int max)
@@ -452,7 +451,8 @@ static bool should_do_gc_v3(struct ssd *ssd, struct write_pointer *wpp) {
     if (ssd->lm.free_line_cnt < 4) {
         printf("what's wrong?\n");
     }
-    
+   
+	// write pointer에 해당하는 line의 수가 4개를 초과하면 GC 수행
     if (wpp && wpp->vic_cnt >= gc_threshold) {
         // if (wpp->id != 256) {
         //     printf("line %d do batch gc\n", wpp->id);
@@ -474,8 +474,8 @@ static bool should_do_gc_v3(struct ssd *ssd, struct write_pointer *wpp) {
         return true;
         
     } else if (ssd->trans_wp.vic_cnt >= gc_threshold) {
-
         // * 如果gtd写指针的line的数量大于=阈值，对其进行GC
+		// gtd의 write pointer의 line의 수가 임계값 이상이면 GC 수행
 
         QTAILQ_INSERT_TAIL(&lm->victim_list, ssd->trans_wp.curline, entry);
         lm->victim_line_cnt++;
@@ -492,12 +492,15 @@ static bool should_do_gc_v3(struct ssd *ssd, struct write_pointer *wpp) {
         struct line *tvl = QTAILQ_FIRST(&lm->victim_list);
         struct write_pointer *write_back_wp = NULL;
         struct line *vl = NULL;
-
         
         // QTAILQ_REMOVE(&lm->victim_list, vl, entry);
         // int max_vic = 1;
         if (lm->free_line_cnt < free_line_threshold) {
-            while (tvl) {
+            
+			// victim_list의 line 중 해당하는 write_pointer의
+			// vic_cnt가 1이상인 line 찾기
+			// tvl : 조건 만족하는 victim line
+			while (tvl) {
                 struct write_pointer *tmp_wp = ssd->line2write_pointer[tvl->id];
                 if (tmp_wp->vic_cnt > 1) {
                     write_back_wp = tmp_wp;
@@ -507,23 +510,26 @@ static bool should_do_gc_v3(struct ssd *ssd, struct write_pointer *wpp) {
 
                 tvl = tvl->entry.tqe_next;
             }
+			// 조건 만족하는 tvl 못 찾은 경우, victim_list의 첫번째 line으로 지정
             if (!tvl) {
                 tvl = QTAILQ_FIRST(&lm->victim_list);
                 write_back_wp = ssd->line2write_pointer[tvl->id];
             }
             if (write_back_wp->vic_cnt == 1) {
-                printf("???\n");
+                printf("vic_cnt of selected victim line write_pointer is 1\n");
             }
 
             if (&ssd->trans_wp == wpp) {
                 printf("trans wp is doing gc\n");
             }
-            
-            if (vl) { 
-                
+           
+			// vl : 조건 만족하는 victim 할 line
+			// write_back_wp : 해당 line 가지고 있는 write_pointer
+            if (vl) {
                 if (write_back_wp->curline && write_back_wp->curline->rest == vl->vpc) {
                     printf("some pages are not successfully invalidated! \n");
                 }
+				// victim line의 valid page 보다 curline의 빈 공간이 더 많은 경우
                 if (write_back_wp->curline && write_back_wp->curline->rest >= vl->vpc) {
                     if (vl->type == GTD) {
                         
@@ -543,18 +549,15 @@ static bool should_do_gc_v3(struct ssd *ssd, struct write_pointer *wpp) {
                         }   
                         return true;
                     }
-                } else {
+                } else { // victim line의 valid page 보다 curline의 빈 공간이 더 적은 경우
                     if (write_back_wp != wpp) {
                         QTAILQ_INSERT_TAIL(&lm->victim_list, write_back_wp->curline, entry);
-                    // printf("batch gtd write id: %d\n", write_back_wp->curline->id);
                         lm->victim_line_cnt++;
                     }
+					// write pointer에 새로운 line 할당 해주기
                     init_line_write_pointer(ssd, write_back_wp, false);
-                    // write_back_wp->vic_cnt++;
 
                     if (vl->type == GTD) {
-                        
-                        // printf("gtd batch do gc\n");
                         batch_gtd_do_gc(ssd, true, write_back_wp, write_back_wp->vic_cnt, vl);
                     } else if (vl->type == DATA) {
                         // printf("line %d do batch gc\n", write_back_wp->id);
@@ -570,6 +573,7 @@ static bool should_do_gc_v3(struct ssd *ssd, struct write_pointer *wpp) {
                         }
                     }
                 }
+
                 if (write_back_wp == wpp) {
                     if (wpp->curline->rest == 0) {
                         func(&wpp->curline->rest);
@@ -578,10 +582,10 @@ static bool should_do_gc_v3(struct ssd *ssd, struct write_pointer *wpp) {
                     return true;
                 }
             }
+			// else : (!vl)
+			// 조건 만족하는 line 못 찾은 경우
         }
-        
-        
-
+		// else : (lm->free_line_cnt > free_line_threshold)
     }
     return false;
 }
@@ -589,6 +593,7 @@ static bool should_do_gc_v3(struct ssd *ssd, struct write_pointer *wpp) {
 
 static void clear_one_write_pointer_victim_lines(struct wp_lines *wpl, struct line *victim_line) {
     struct wp_lines *tmp;
+
     while (wpl) {
         if (wpl->next && wpl->next->line == victim_line) {
             tmp = wpl->next;
@@ -606,6 +611,7 @@ static void clear_one_write_pointer_victim_lines(struct wp_lines *wpl, struct li
 static void clear_all_write_pointer_victim_lines(struct wp_lines *wpl, struct write_pointer *wpp) {
     wpl = wpp->wpl->next;
     struct wp_lines *wpp_wpl = NULL, *tmp;
+
     while (wpl) {
         tmp = wpl;
         wpl = wpl->next;
@@ -615,10 +621,10 @@ static void clear_all_write_pointer_victim_lines(struct wp_lines *wpl, struct wr
             g_free(tmp);
         }
     }
+
     wpp_wpl->next = NULL;
     wpp->wpl->next = wpp_wpl;
     wpp->vic_cnt = 1;
-    
 }
 
 /**
@@ -650,10 +656,10 @@ static void advance_line_write_pointer (struct ssd *ssd, struct write_pointer *w
                 
                 wpp->pg = 0;
 
+				// 할당 받은 line의 page 다 사용하면 victim_list로 취급
                 QTAILQ_INSERT_TAIL(&lm->victim_list, wpp->curline, entry);
                 // pqueue_insert(lm->victim_line_pq, wpp->curline);
                 // wpp->vic_cnt++;
-                
 
                 lm->victim_line_cnt++;
 
@@ -666,7 +672,6 @@ static void advance_line_write_pointer (struct ssd *ssd, struct write_pointer *w
                 //clock_gettime(CLOCK_MONOTONIC, &time2);
                 
                 //ssd->stat.GC_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
-                
                 
                 if (!res)
                     init_line_write_pointer(ssd, wpp, false);
@@ -730,7 +735,7 @@ static struct ppa get_new_line_page(struct ssd *ssd, struct write_pointer *wpp)
     ppa.g.pl = wpp->pl;
     wpp->curline->rest--;
     if (wpp->curline->rest < 0) {
-        printf("buduijin\n");
+        printf("No more entires in line\n");
         func(&wpp->curline->rest);
     }
     ftl_assert(ppa.g.pl == 0);
@@ -808,7 +813,8 @@ static void ssd_init_params(struct ssdparams *spp)
     
 	// one translation page can accomodate 512 pages(1 blocks), so 64 trans pages combine a line
     spp->trans_per_line = spp->pgs_per_line / spp->ents_per_pg;	// 64 * 512 / 512 
-    spp->tt_line_wps = spp->tt_trans_pgs/spp->trans_per_line;	// 256 
+    
+	spp->tt_line_wps = spp->tt_trans_pgs/spp->trans_per_line;	// 256 
     printf("total pages: %d\n", spp->tt_line_wps);
 
     spp->tt_gtd_size = spp->tt_pgs / spp->ents_per_pg;		// 256 * 64
@@ -1089,6 +1095,7 @@ static inline bool valid_lpn(struct ssd *ssd, uint64_t lpn)
     return (lpn < ssd->sp.tt_pgs);
 }
 
+// 주어진 ppa가 매핑된 상태인지 확인
 static inline bool mapped_ppa(struct ppa *ppa)
 {
     return !(ppa->ppa == UNMAPPED_PPA);
@@ -1128,16 +1135,19 @@ static inline struct nand_page *get_pg(struct ssd *ssd, struct ppa *ppa)
     return &(blk->pg[ppa->g.pg]);
 }
 
+// lpn으로 해당 GTD entry의 ppa 가져오기
 static inline struct ppa get_gtd_ent(struct ssd *ssd, uint64_t lpn) {
     struct ssdparams *spp = &ssd->sp;
     int gtd_index = lpn / spp->ents_per_pg;
     return ssd->gtd[gtd_index];
 }
 
+// GTD index로 해당하는 GTD entry의 ppa 가져오기 
 static inline struct ppa get_gtd_ent_index(struct ssd *ssd, uint64_t index) {
     return ssd->gtd[index];
 }
 
+// GTD entry에 새로운 ppa(translation page) 할당 하기
 static inline void set_gtd_ent(struct ssd *ssd, struct ppa *gtd_ppa, uint64_t index) {
 
     ssd->gtd[index] = *gtd_ppa;
@@ -1346,6 +1356,8 @@ static struct cmt_entry *cmt_hit_no_move(struct ssd *ssd, uint64_t lpn)
     return cmt_entry;
 }
 
+//evict_entry_from_cmt() 시 evict entry가 dirty 일 때
+//해당하는 GTD entry의 ppa를 update 시 동작
 static uint64_t translation_write_page(struct ssd *ssd, uint64_t tvpn)
 {
     struct ssdparams *spp = &ssd->sp;
@@ -1551,15 +1563,19 @@ static int evict_entry_from_cmt(struct ssd *ssd)
 
 	//evict 하는 entry가 dirty면 flash에 update 해줘야 됨.
     if (cmt_entry->dirty == DIRTY) {
-        tvpn = cmt_entry->lpn;
-        gtd_ppa = get_gtd_ent(ssd, tvpn);
+
+		// evict되는 cmt entry가 속한
+		// GTD entry의 translation page invalid 처리하기
+        tvpn = cmt_entry->lpn;	
+        gtd_ppa = get_gtd_ent(ssd, tvpn);	
         if (mapped_ppa(&gtd_ppa)) {
             translation_read_page_no_req(ssd, &gtd_ppa);
 
             mark_page_invalid(ssd, &gtd_ppa);
             set_rmap_ent(ssd, INVALID_LPN, &gtd_ppa);
         }
-        
+       
+		// GTD entry에 새로운 ppa 할당해주기
         translation_write_page(ssd, tvpn);
 
         //all dirty entry in TPnode update and write to a new translation page
@@ -1745,7 +1761,7 @@ static struct nand_lun *process_translation_page_write(struct ssd *ssd, NvmeRequ
     struct nand_lun *old_lun;
 
     //get gtd mapping physical page
-    tvpn = lpn / spp->ents_per_pg;
+    tvpn = lpn / spp->ents_per_pg;			// gtd index num
     ppa = get_gtd_ent_index(ssd, tvpn);		// 해당 gtd index에 해당하는 ppa (TPPN)
 
     if (cm->used_cmt_entry_cnt == cm->tt_entries) {		// cmt에 entry 가득 찬 경우
@@ -1758,11 +1774,11 @@ static struct nand_lun *process_translation_page_write(struct ssd *ssd, NvmeRequ
         old_lun = NULL;
     } else {
         //read latency
-        translation_read_page(ssd, req, &ppa);		// first read
+        translation_read_page(ssd, req, &ppa);		// first read, TPPN 읽기
         old_lun = get_lun(ssd, &ppa);
         next_avail_time = old_lun->next_lun_avail_time;
         
-		//get real lpn-ppn
+		//get real lpn-ppn, TPPN에 적힌 진짜 PPN
         ppa = get_maptbl_ent(ssd, lpn);
 
         if (!mapped_ppa(&ppa) || !valid_ppa(ssd, &ppa)) {
@@ -1775,8 +1791,12 @@ static struct nand_lun *process_translation_page_write(struct ssd *ssd, NvmeRequ
         /* when tpnode has not been evicted, execute request-level prefetching, 
         end_lpn is the end of translation page or end of request, when evict
         a TPnode or at the end of translation page/request, stop */
+		// long request의 첫번째 page가 cmt miss 발생 시,
+		// request에 해당하는 모든 매핑 cmt에 load 하기
+		// request에 해당하는 모든 page가 처리 되거나, tpnode가 삭제되면 종료
         if (spp->enable_request_prefetch && !terminate_flag) {
             for (new_lpn = start_lpn + 1; new_lpn <= end_lpn; new_lpn++) {
+				// 이미 cmt에 있는 lpn은 continue, cmt에 없는 lpn에 대해 동작
                 if (cmt_hit_no_move(ssd, new_lpn)) continue;
 
                 new_ppa = get_maptbl_ent(ssd, new_lpn);
@@ -1912,7 +1932,7 @@ static void gc_read_page(struct ssd *ssd, struct ppa *ppa)
 //     return 0;
 // }
 
-
+//model training시 호출
 static uint64_t gc_write_page_through_line_wp(struct ssd *ssd, uint64_t lpn, struct ppa *new_ppa, struct write_pointer* wpp)
 {
     // struct ppa new_ppa;
@@ -1996,6 +2016,8 @@ static void mark_line_free(struct ssd *ssd, struct ppa *ppa)
     ssd->line2write_pointer[line->id] = NULL;
 }
 
+//victim line으로 선정된 line이 GTD type일 때 gtd_do_gc()에 의해,
+//해당 line의 valid translation page들을 새로운 line으로 copy 하기 
 static uint64_t gc_translation_page_write(struct ssd *ssd, struct ppa *old_ppa)
 {
     struct ppa new_ppa;
@@ -2064,21 +2086,16 @@ static void clean_one_trans_block(struct ssd *ssd, struct ppa *ppa)
             cnt++;
         }
     }
-
     ftl_assert(get_blk(ssd, ppa)->vpc == cnt);
 }
 
 
 static int gtd_do_gc(struct ssd *ssd, bool force, struct write_pointer *wpp, struct line *victim_line, bool delete)
 {   
-    // printf("gtd do gc: %d\n", gc_line_num++);
-    // fprintf(gc_fp, "%ld\n", counter);
     struct ssdparams *spp = &ssd->sp;
     struct nand_lun *lunp;
-
     struct ppa ppa;
     int ch, lun;
-    
 
     ppa.g.blk = victim_line->id;
     ftl_debug("GC-ing line:%d,ipc=%d,victim=%d,full=%d,free=%d\n", ppa.g.blk,
@@ -2091,7 +2108,8 @@ static int gtd_do_gc(struct ssd *ssd, bool force, struct write_pointer *wpp, str
             ppa.g.lun = lun;
             ppa.g.pl = 0;
 
-            // 先获取到block,然后消除block,针对每个page都进行重新写入（ssd_write(page)），之后进行擦除
+			// block을 가져 온 다음 block을 제거하고,
+			// 각 page에 대해 다시 ssd_write(page)를 실행하고 block을 삭제
             lunp = get_lun(ssd, &ppa);
             clean_one_trans_block(ssd, &ppa);
             mark_block_free(ssd, &ppa);
@@ -2116,8 +2134,6 @@ static int gtd_do_gc(struct ssd *ssd, bool force, struct write_pointer *wpp, str
     /* update line status */
     mark_line_free(ssd, &ppa);
 
-    
-
     return 0;
 }
 
@@ -2134,7 +2150,6 @@ static void batch_gtd_do_gc(struct ssd *ssd, bool force, struct write_pointer *w
             wpl = wpl->next;
             continue;
         }
-
         
         gtd_do_gc(ssd, force, wpp, victim_line, false);
         wpp->vic_cnt--;
@@ -2144,7 +2159,6 @@ static void batch_gtd_do_gc(struct ssd *ssd, bool force, struct write_pointer *w
 
     clear_all_write_pointer_victim_lines(wpl, wpp);
     return;
-
 }
 
 static void free_all_blocks(struct ssd *ssd, struct ppa *tppa) {
@@ -2194,7 +2208,6 @@ static void gc_read_all_valid_data(struct ssd *ssd, struct ppa *tppa, uint64_t g
 
             lunp = get_lun(ssd, &ppa);
 
-
             struct nand_page *pg_iter = NULL;
             int cnt = 0;
 
@@ -2209,7 +2222,7 @@ static void gc_read_all_valid_data(struct ssd *ssd, struct ppa *tppa, uint64_t g
                     tmp_lpn = get_rmap_ent(ssd, &ppa);
                     int gtd_index = tmp_lpn/spp->ents_per_pg;
                     *start_gtd = gtd_index - (gtd_index % parallel);      // ! FIXME: 
-                    int gtd_index_loc = gtd_index % spp->trans_per_line;    // gtd_index%64
+                    int gtd_index_loc = gtd_index % spp->trans_per_line;    // gtd_index%64, 속하는 GTD entry group 내 index
 
                     // * check if there is invalid page
                     // if (group_gtd_index[gtd_index_loc] >= 512) {
@@ -2239,8 +2252,6 @@ static void gc_read_all_valid_data(struct ssd *ssd, struct ppa *tppa, uint64_t g
                     use_lat = lat;
                 }
             }
-
-            
 
             lunp->gc_endtime = lunp->next_lun_avail_time;
             //ssd->stat.GC_time += use_lat;
@@ -2279,8 +2290,7 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
         total += group_gtd_index[i];
 
         // * first sort the lpns
-        
-
+        // group_gtd_lpns[i]내 존재하는 lpn 크기 순으로 정렬
         //clock_gettime(CLOCK_MONOTONIC, &time1);
         quick_sort(group_gtd_lpns[i], 0, group_gtd_index[i]-1);
         //clock_gettime(CLOCK_MONOTONIC, &time2);
@@ -2288,6 +2298,7 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
         //ssd->stat.sort_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
 
         // * second write them back, collect the ppa
+		// 유효한 lpn들 연속적인 vppn으로 변환 및 매핑
         for (int pgi = 0; pgi < group_gtd_index[i]; pgi++) {
             struct ppa tmp_ppa;
             gc_write_page_through_line_wp(ssd, group_gtd_lpns[i][pgi], &tmp_ppa, wpp);
@@ -2301,9 +2312,8 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
         // set_rmap_ent(ssd, INVALID_LPN, &old_gtd_ppa);
         // gc_translation_page_write(ssd, &old_gtd_ppa);
 
-
+		// 유효 lpn이 특정 개수 이상인 경우에만 train 실행
         if (group_gtd_index[i] > TRAIN_THRESHOLD) {
-
 
             // * prepare the training arrays
             uint64_t start_train_lpn = group_gtd_lpns[i][0];
@@ -2315,11 +2325,14 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
                 train_vppns[i][pgi] = train_vppns[i][pgi] - start_train_ppa;
             }
 
+			// 한 lr_breakpoint 내 포함되는 lpn 개수 
             const int interval_num = group_gtd_index[i] / MAX_INTERVALS;
+			// 한 lr_breakpoint 내 구간 마다 포함되는 lpn 개수
             uint64_t max_inter_idx[MAX_INTERVALS];
 
             
             /* 2. find k-biggest intervals */
+			// lr_node 8구간 중 각 구간에 포함되는 lpn 개수 설정
             for (int j = 0; j < MAX_INTERVALS; j++) {
                 if ((j+1)*interval_num < group_gtd_index[i]) {
                     max_inter_idx[j] = (j+1)*interval_num;
@@ -2328,9 +2341,10 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
                 }
             }
 
-
             int lr_success = 0;
             int lr_total = 0;
+
+			//lr_breakpoint 구간마다 반복
             for (int j = 0; j < MAX_INTERVALS; j++) {
                 const int segment_train_num = interval_num;
                 
@@ -2343,8 +2357,6 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
                     segment_train_lpns[num_p] = train_lpns[i][k];
                     segment_train_ppas[num_p++] = train_vppns[i][k];
                 }
-
-                
 
                 // * 3.1 set the brk key of each segment
                 ssd->lr_nodes[start_gtd+i].brks[j].key = segment_train_lpns[num_p-1];
@@ -2361,17 +2373,20 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
                 int predict_right = 0;
                 ssd->lr_nodes[start_gtd+i].brks[j].w = w_u;
                 ssd->lr_nodes[start_gtd+i].brks[j].b = b_u;
+
                 int su = 0;
                 float pred_loc;
                 
+				// 생성한 모델 이용해 ppn 확인 및 bitmap 설정
                 for (int ii = 0; ii < num_p; ii++) {
                     pred_loc = predict(segment_train_lpns[ii], &ssd->lr_nodes[start_gtd+i].brks[j].w, \
                                          &ssd->lr_nodes[start_gtd+i].brks[j].b);
-                    uint64_t tmp_loc = (uint64_t)pred_loc;
+                    uint64_t tmp_loc = (uint64_t)pred_loc;	//소수점 버림
+
                     if (pred_loc - tmp_loc >= 0.5) {
                         tmp_loc++;
                     }
-                    if (tmp_loc < trans_ent) {
+                    if (tmp_loc < trans_ent) {	// ??
                         if (tmp_loc == segment_train_ppas[ii]) {
                             su++;
                             predict_right++;
@@ -2404,7 +2419,6 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
 }
 
 static int batch_line_do_gc(struct ssd* ssd, bool force, struct write_pointer *wpp, struct line *delete_line) {
-
     struct ppa ppa;
     const int trans_ent = ssd->sp.ents_per_pg;
     const int parallel = ssd->sp.tt_luns;
@@ -2416,6 +2430,7 @@ static int batch_line_do_gc(struct ssd* ssd, bool force, struct write_pointer *w
     struct wp_lines *wpl = wpp->wpl->next;
     struct line *victim_line;
     int cnt = 0;
+
     while (wpl) {
         victim_line = wpl->line;
         ppa.g.blk = victim_line->id;
@@ -2440,7 +2455,6 @@ static int batch_line_do_gc(struct ssd* ssd, bool force, struct write_pointer *w
     wpl = wpp->wpl->next;
     clear_all_write_pointer_victim_lines(wpl, wpp);
     
-    
 	//struct timespec time1, time2;
 
 	//clock_gettime(CLOCK_MONOTONIC, &time1);
@@ -2449,14 +2463,11 @@ static int batch_line_do_gc(struct ssd* ssd, bool force, struct write_pointer *w
 	//ssd->stat.train_time += ((time2.tv_sec - time1.tv_sec)*1000000000 + (time2.tv_nsec - time1.tv_nsec));
     /* update line status */
     
-
     return 0;
-    
 }
 
 static int line_do_gc(struct ssd *ssd, bool force, struct write_pointer *wpp, struct line *victim_line)
 {
-    // printf("line do gc: %d\n", gc_line_num++);
     // struct line *victim_line = NULL;
     // struct ssdparams *spp = &ssd->sp;
     // struct nand_lun *lunp;
@@ -2473,7 +2484,7 @@ static int line_do_gc(struct ssd *ssd, bool force, struct write_pointer *wpp, st
     uint64_t group_gtd_lpns[parallel][trans_ent];
     int group_gtd_index[parallel];
     memset(group_gtd_index, 0, sizeof(group_gtd_index));
-    int start_gtd = 0;
+    int start_gtd = 0;	//gtd_index가 속한 GTD 그룹의 시작 지점
 
     gc_read_all_valid_data(ssd, &ppa, group_gtd_lpns, group_gtd_index, &start_gtd);
 
@@ -2817,6 +2828,7 @@ static uint64_t ssd_write(struct ssd *ssd, NvmeRequest *req)
 
     // * simulate the model sequential initalization
     // TODO: 如果顺序写长度大于学习模型中该范围的分段函数的有效长度，那么就取代它
+	// sequential write 길이가 학습 모델에서 해당 범위에 해당하는 segment보다 길면 대체하기
     if (ssd->model_used) {
         sequence_cnt = end_lpn - start_lpn;
         int gtd_index = lpn/spp->ents_per_pg;
