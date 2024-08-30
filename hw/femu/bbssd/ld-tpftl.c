@@ -2219,9 +2219,9 @@ static void gc_read_all_valid_data(struct ssd *ssd, struct ppa *tppa, uint64_t g
                 if (pg_iter->status == PG_VALID) {
 
                     // find which gtd a valid page belongs to
-                    tmp_lpn = get_rmap_ent(ssd, &ppa);
-                    int gtd_index = tmp_lpn/spp->ents_per_pg;
-                    *start_gtd = gtd_index - (gtd_index % parallel);      // ! FIXME: 
+                    tmp_lpn = get_rmap_ent(ssd, &ppa);	//valid ppa의 lpn 가져오기
+                    int gtd_index = tmp_lpn/spp->ents_per_pg;	//해당하는 gtd_index 가져오기 
+                    *start_gtd = gtd_index - (gtd_index % parallel);      //해당하는 gtd_entry_group의 첫번째 gtd index 가져오기 
                     int gtd_index_loc = gtd_index % spp->trans_per_line;    // gtd_index%64, 속하는 GTD entry group 내 index
 
                     // * check if there is invalid page
@@ -2290,7 +2290,7 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
         total += group_gtd_index[i];
 
         // * first sort the lpns
-        // group_gtd_lpns[i]내 존재하는 lpn 크기 순으로 정렬
+        // group_gtd_lpns[i]내 lpn들을 크기 순으로 정렬
         //clock_gettime(CLOCK_MONOTONIC, &time1);
         quick_sort(group_gtd_lpns[i], 0, group_gtd_index[i]-1);
         //clock_gettime(CLOCK_MONOTONIC, &time2);
@@ -2301,8 +2301,8 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
 		// 유효한 lpn들 연속적인 vppn으로 변환 및 매핑
         for (int pgi = 0; pgi < group_gtd_index[i]; pgi++) {
             struct ppa tmp_ppa;
-            gc_write_page_through_line_wp(ssd, group_gtd_lpns[i][pgi], &tmp_ppa, wpp);
-            train_vppns[i][pgi] = ppa2vppn(ssd, &tmp_ppa);
+            gc_write_page_through_line_wp(ssd, group_gtd_lpns[i][pgi], &tmp_ppa, wpp);	//valid lpn을 새로운 ppa에 매핑
+            train_vppns[i][pgi] = ppa2vppn(ssd, &tmp_ppa);	//ppa를 vppns으로 변환
         }
 
         // * update the gtd ppa
@@ -2316,16 +2316,19 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
         if (group_gtd_index[i] > TRAIN_THRESHOLD) {
 
             // * prepare the training arrays
-            uint64_t start_train_lpn = group_gtd_lpns[i][0];
-            uint64_t start_train_ppa = train_vppns[i][0];
-            ssd->lr_nodes[start_gtd+i].start_lpn = start_train_lpn;
+            uint64_t start_train_lpn = group_gtd_lpns[i][0];	//tmp_lpn
+            uint64_t start_train_ppa = train_vppns[i][0];		//tmp_lpn의 새로운 ppa(vppn)
+            
+			ssd->lr_nodes[start_gtd+i].start_lpn = start_train_lpn;
             ssd->lr_nodes[start_gtd+i].start_ppa = start_train_ppa;
-            for (int pgi = 0; pgi < group_gtd_index[i]; pgi++) {
+           
+			// 최대 512로 제한
+			for (int pgi = 0; pgi < group_gtd_index[i]; pgi++) {
                 train_lpns[i][pgi] = group_gtd_lpns[i][pgi] - start_train_lpn;
                 train_vppns[i][pgi] = train_vppns[i][pgi] - start_train_ppa;
             }
 
-			// 한 lr_breakpoint 내 포함되는 lpn 개수 
+			// 한 lr_breakpoint가 가질 lpn 개수 
             const int interval_num = group_gtd_index[i] / MAX_INTERVALS;
 			// 한 lr_breakpoint 내 구간 마다 포함되는 lpn 개수
             uint64_t max_inter_idx[MAX_INTERVALS];
@@ -2352,7 +2355,8 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
                 uint64_t segment_train_ppas[segment_train_num];
                 int start = j == 0 ? 0 : max_inter_idx[j-1];
                 int end = max_inter_idx[j];
-                int num_p = 0;
+                int num_p = 0;	// lr_node내 포함되는 lpn 개수
+
                 for (int k = start; k < end; k++) {
                     segment_train_lpns[num_p] = train_lpns[i][k];
                     segment_train_ppas[num_p++] = train_vppns[i][k];
@@ -2386,7 +2390,7 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
                     if (pred_loc - tmp_loc >= 0.5) {
                         tmp_loc++;
                     }
-                    if (tmp_loc < trans_ent) {	// ??
+                    if (tmp_loc < trans_ent) {
                         if (tmp_loc == segment_train_ppas[ii]) {
                             su++;
                             predict_right++;
@@ -2394,11 +2398,15 @@ static void model_training(struct ssd *ssd, struct write_pointer *wpp, uint64_t 
                             //     already_one++;
                             // }
                             ssd->bitmaps[start_train_lpn + start + tmp_loc] = 1;
+							printf("1, sum:%ld, start_train_lpn:%ld, start:%d, tmp_loc:%ld\n", \
+									start_train_lpn+start+tmp_loc, start_train_lpn, start, tmp_loc);
                             // ssd->lr_nodes[start_gtd+i].bitmap[tmp_loc] = 1;
                             
                         } else {
                             // ssd->lr_nodes[start_gtd+i].bitmap[tmp_loc] = 0;
                             ssd->bitmaps[start_train_lpn + start + tmp_loc] = 0;
+							printf("0, sum:%ld, start_train_lpn:%ld, start:%d, tmp_loc:%ld\n", \
+									start_train_lpn+start+tmp_loc, start_train_lpn, start, tmp_loc);
                         }
                     }
                 }
